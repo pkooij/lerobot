@@ -25,6 +25,7 @@ import logging
 from collections.abc import Callable
 from copy import copy
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING
 
@@ -325,6 +326,21 @@ def build_rollout_context(
     policy_config = cfg.policy
     if policy_config is None:
         raise ValueError("--policy.path is required for rollout")
+    if cfg.dataset is not None and not cfg.resume:
+        repo_name = cfg.dataset.repo_id.split("/", 1)[-1]
+        if not repo_name.startswith("rollout_"):
+            raise ValueError(
+                "Dataset names for rollout must start with 'rollout_'. "
+                "Use --dataset.repo_id=<user>/rollout_<name> for policy deployment datasets."
+            )
+        if cfg.dataset.root is not None:
+            dataset_root = Path(cfg.dataset.root)
+            if dataset_root.exists() or dataset_root.is_symlink():
+                raise FileExistsError(
+                    f"Recording directory already exists: {dataset_root}. "
+                    "Choose a fresh --dataset.root for a new run, or use --resume=true "
+                    "only when intentionally continuing the existing dataset."
+                )
     if cfg.planner.enabled:
         # A ReBot connection enables motors; reject missing planner credentials first.
         cfg.planner.require_api_key()
@@ -523,12 +539,6 @@ def build_rollout_context(
                 * len(robot.cameras if hasattr(robot, "cameras") else []),
             )
         else:
-            repo_name = cfg.dataset.repo_id.split("/", 1)[-1]
-            if not repo_name.startswith("rollout_"):
-                raise ValueError(
-                    "Dataset names for rollout must start with 'rollout_'. "
-                    "Use --dataset.repo_id=<user>/rollout_<name> for policy deployment datasets."
-                )
             cfg.dataset.stamp_repo_id()
             target_video_mb = getattr(cfg.strategy, "target_video_file_size_mb", None)
             dataset = LeRobotDataset.create(

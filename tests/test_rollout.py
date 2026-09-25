@@ -174,6 +174,92 @@ def test_trained_rtc_clamps_prefix_to_checkpoint_and_queue():
     assert _clamp_trained_rtc_delay(conditioned_delay=4, available_steps=30, training_max_delay=10) == 4
 
 
+def test_invalid_recording_name_fails_before_loading_policy_or_connecting_robot(monkeypatch):
+    import lerobot.rollout.context as rollout_context
+    from lerobot.configs.dataset import DatasetRecordConfig
+    from lerobot.policies.act.configuration_act import ACTConfig
+    from lerobot.rollout.configs import RolloutConfig, SentryStrategyConfig
+    from tests.mocks.mock_robot import MockRobotConfig
+
+    cfg = RolloutConfig(
+        robot=MockRobotConfig(),
+        policy=ACTConfig(device="cpu"),
+        device="cpu",
+        strategy=SentryStrategyConfig(),
+        dataset=DatasetRecordConfig(repo_id="user/missing_rollout_prefix", single_task="pick block"),
+    )
+    load_policy = MagicMock()
+    make_robot = MagicMock()
+    monkeypatch.setattr(rollout_context, "_load_pretrained_policy", load_policy)
+    monkeypatch.setattr(rollout_context, "make_robot_from_config", make_robot)
+    with pytest.raises(ValueError, match="start with 'rollout_'"):
+        rollout_context.build_rollout_context(cfg, threading.Event())
+    load_policy.assert_not_called()
+    make_robot.assert_not_called()
+
+
+@pytest.mark.parametrize("existing_kind", ["directory", "file", "dangling_symlink"])
+def test_existing_recording_root_fails_before_loading_policy_or_connecting_robot(
+    monkeypatch, tmp_path, existing_kind
+):
+    import lerobot.rollout.context as rollout_context
+    from lerobot.configs.dataset import DatasetRecordConfig
+    from lerobot.policies.act.configuration_act import ACTConfig
+    from lerobot.rollout.configs import RolloutConfig, SentryStrategyConfig
+    from tests.mocks.mock_robot import MockRobotConfig
+
+    root = tmp_path / "dataset"
+    if existing_kind == "directory":
+        root.mkdir()
+        (root / "evidence").write_text("retain this recording")
+    elif existing_kind == "file":
+        root.write_text("retain this file")
+    else:
+        root.symlink_to(tmp_path / "missing")
+    cfg = RolloutConfig(
+        robot=MockRobotConfig(),
+        policy=ACTConfig(device="cpu"),
+        device="cpu",
+        strategy=SentryStrategyConfig(),
+        dataset=DatasetRecordConfig(repo_id="user/rollout_test", root=root, single_task="pick block"),
+    )
+    load_policy = MagicMock()
+    make_robot = MagicMock()
+    monkeypatch.setattr(rollout_context, "_load_pretrained_policy", load_policy)
+    monkeypatch.setattr(rollout_context, "make_robot_from_config", make_robot)
+    with pytest.raises(FileExistsError, match="Recording directory already exists"):
+        rollout_context.build_rollout_context(cfg, threading.Event())
+    load_policy.assert_not_called()
+    make_robot.assert_not_called()
+    assert root.exists() or root.is_symlink()
+    if existing_kind == "directory":
+        assert (root / "evidence").read_text() == "retain this recording"
+
+
+def test_explicit_resume_does_not_reject_existing_recording_root(monkeypatch, tmp_path):
+    import lerobot.rollout.context as rollout_context
+    from lerobot.configs.dataset import DatasetRecordConfig
+    from lerobot.policies.act.configuration_act import ACTConfig
+    from lerobot.rollout.configs import RolloutConfig, SentryStrategyConfig
+    from tests.mocks.mock_robot import MockRobotConfig
+
+    cfg = RolloutConfig(
+        robot=MockRobotConfig(),
+        policy=ACTConfig(device="cpu"),
+        device="cpu",
+        resume=True,
+        strategy=SentryStrategyConfig(),
+        dataset=DatasetRecordConfig(repo_id="user/rollout_test", root=tmp_path, single_task="pick block"),
+    )
+    sentinel = RuntimeError("Reached policy load without connecting hardware")
+    load_policy = MagicMock(side_effect=sentinel)
+    monkeypatch.setattr(rollout_context, "_load_pretrained_policy", load_policy)
+    with pytest.raises(RuntimeError) as caught:
+        rollout_context.build_rollout_context(cfg, threading.Event())
+    assert caught.value is sentinel
+    load_policy.assert_called_once()
+
+
 @pytest.mark.parametrize(
     ("execution_horizon", "queue_threshold", "match"),
     [
