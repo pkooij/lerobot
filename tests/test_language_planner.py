@@ -605,3 +605,58 @@ def test_planner_coordinate_format_is_explicit():
     assert PlannerConfig().output_coordinate_format == "original_pixels"
     with pytest.raises(ValueError, match="output_coordinate_format"):
         PlannerConfig(output_coordinate_format="auto")
+
+
+def test_planner_deadline_discards_late_response_and_bounds_inflight_requests(monkeypatch, tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+    decision = {
+        "style": "subtask",
+        "command": "pick the blue block",
+        "camera": None,
+        "points": [],
+        "point_mode": None,
+        "assessment": "blue block visible",
+        "status": "continue",
+    }
+    response = Mock(
+        json=lambda: {
+            "status": "completed",
+            "output": [{"content": [{"type": "output_text", "text": json.dumps(decision)}]}],
+        }
+    )
+
+    def stalled_post(*args, **kwargs):
+        started.set()
+        release.wait()
+        return response
+
+    post = Mock(side_effect=stalled_post)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setattr("lerobot.rollout.planner.requests.post", post)
+    log = tmp_path / "decisions.jsonl"
+    planner = VisionLanguagePlanner(PlannerConfig(camera_keys=["base"], timeout_s=0.05, log_path=str(log)))
+    observation = {"base": np.zeros((48, 64, 3), dtype=np.uint8)}
+    try:
+        with pytest.raises(TimeoutError, match="late responses are discarded"):
+            planner(observation, "old goal", 0)
+        assert started.wait(timeout=1)
+        assert not release.is_set()
+        pending = planner._pending_request
+        assert not pending.done()
+        assert planner._history == []
+        with pytest.raises(RuntimeError, match="Previous planner request"):
+            planner(observation, "new goal", 1)
+        assert post.call_count == 1
+    finally:
+        release.set()
+        if planner._pending_request is not None:
+            planner._pending_request.result(timeout=2)
+    # Late completion alone cannot append history or emit a returned-command log.
+    assert planner._history == []
+    assert all(json.loads(line)["event"] != "planner_returned" for line in log.read_text().splitlines())
+    response.close.assert_called_once()
+    assert planner(observation, "new goal", 1) == "pick the blue block"
+    assert post.call_count == 2
+    assert len(planner._history) == 2
+    assert planner._history[0]["content"][0]["text"] == "Overall task: new goal"

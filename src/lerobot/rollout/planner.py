@@ -8,8 +8,10 @@ import base64
 import io
 import json
 import os
+import threading
 import time
 import uuid
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -128,6 +130,8 @@ class VisionLanguagePlanner:
         self.config = config
         self._history: list[dict] = []
         self._session: tuple[str, int] | None = None
+        self._request_lock = threading.Lock()
+        self._pending_request: Future | None = None
 
     def __call__(self, observation: dict, goal: str, session: int) -> str:
         started = time.perf_counter()
@@ -368,14 +372,9 @@ class VisionLanguagePlanner:
                 payload["reasoning"] = {"effort": self.config.reasoning_effort}
             path = "/responses"
         key = self.config.require_api_key()
-        response = requests.post(
-            self.config.api_base.rstrip("/") + path,
-            headers={"Authorization": f"Bearer {key}"},
-            json=payload,
-            timeout=self.config.timeout_s,
+        result = self._request_json(
+            self.config.api_base.rstrip("/") + path, {"Authorization": f"Bearer {key}"}, payload
         )
-        response.raise_for_status()
-        result = response.json()
         if self.config.api_format == "chat_completions":
             choices = result.get("choices", [])
             if len(choices) != 1 or choices[0].get("finish_reason") != "stop":
@@ -399,3 +398,39 @@ class VisionLanguagePlanner:
                 if item.get("type") == "output_text"
             )
         return text, result.get("id")
+
+    def _request_json(self, url: str, headers: dict, payload: dict) -> dict:
+        """Bound network/JSON waiting; a late worker cannot issue a command or update history.
+
+        Requests' timeout bounds socket inactivity, not total elapsed time. Keep at most
+        one transport worker per planner, including after a deadline, so a stalled server
+        cannot accumulate background requests on repeated operator retries.
+        """
+        timeout = self.config.timeout_s
+        with self._request_lock:
+            if self._pending_request is not None and not self._pending_request.done():
+                raise RuntimeError(
+                    "Previous planner request is still finishing; action production remains held"
+                )
+            future = Future()
+            self._pending_request = future
+
+            def request():
+                try:
+                    response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+                    try:
+                        response.raise_for_status()
+                        result = response.json()
+                    finally:
+                        response.close()
+                except Exception as exc:
+                    future.set_exception(exc)
+                else:
+                    future.set_result(result)
+
+            # A timed-out network read must not delay robot shutdown or Python exit.
+            threading.Thread(target=request, name="lerobot-planner-transport", daemon=True).start()
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError as exc:
+            raise TimeoutError("Planner request timed out; late responses are discarded") from exc

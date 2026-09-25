@@ -190,6 +190,11 @@ Verify the chosen provider supports image inputs and the strict JSON response sc
 with saved observations before connecting hardware. Both transports use the same named
 images, bounded visual history, trained-command restrictions, coordinate renderer, and
 hold behavior. Truncated completions, refusals, and tool calls do not become commands.
+`planner.timeout_s` also bounds waiting for the HTTP response and JSON decoding by
+elapsed time. A late response cannot issue a command or update planner history. If
+its transport is still running, another request is rejected until it finishes; the
+operator must then explicitly resume planning. This avoids accumulating requests
+after timeouts and does not claim to cancel work already running at the provider.
 Reasoning fields are not used as commands or added to visual history. Provider
 availability and supported reasoning settings may change; there is no automatic model
 fallback. See the [HF Chat Completion API](https://huggingface.co/docs/inference-providers/tasks/chat-completion).
