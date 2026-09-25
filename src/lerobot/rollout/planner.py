@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import math
 import os
 import threading
 import time
@@ -14,6 +15,7 @@ import uuid
 from concurrent.futures import CancelledError, Future
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +23,42 @@ import requests
 from PIL import Image
 
 from lerobot.utils.steering import render_steering_command
+
+
+class PlannerRateLimitError(RuntimeError):
+    """A provider rejection or local cooldown; never resume actions automatically."""
+
+    def __init__(self, retry_after_s: float, *, provider_retry_after: bool, local_cooldown: bool):
+        self.retry_after_s = retry_after_s
+        self.provider_retry_after = provider_retry_after
+        self.local_cooldown = local_cooldown
+        reason = "Planner cooldown" if local_cooldown else "Planner provider rejected the request (HTTP 429)"
+        guidance = (
+            "provider Retry-After"
+            if provider_retry_after
+            else "local cooldown; provider gave no valid Retry-After"
+        )
+        super().__init__(
+            f"{reason}. Wait at least {math.ceil(retry_after_s)}s ({guidance}), then retry /autosteer "
+            "with the goal while the rollout is running. Actions remain held; no automatic retry."
+        )
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    """Accept Retry-After delay seconds or an HTTP date without logging arbitrary headers."""
+    if not isinstance(value, str):
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            deadline = parsedate_to_datetime(value)
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=UTC)
+            seconds = (deadline - datetime.now(UTC)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return max(0.0, seconds) if math.isfinite(seconds) and seconds >= 0 else None
 
 
 @dataclass
@@ -133,6 +171,8 @@ class VisionLanguagePlanner:
         self._session: tuple[str, int] | None = None
         self._request_lock = threading.Lock()
         self._pending_request: Future | None = None
+        self._retry_not_before = 0.0
+        self._provider_retry_after = False
 
     def __call__(self, observation: dict, goal: str, session: int) -> str:
         started = time.perf_counter()
@@ -149,6 +189,15 @@ class VisionLanguagePlanner:
         try:
             command = self._plan(observation, goal, session, audit)
         except Exception as exc:
+            if isinstance(exc, PlannerRateLimitError):
+                audit.update(
+                    http_status=429,
+                    retry_after_s=exc.retry_after_s,
+                    provider_retry_after=exc.provider_retry_after,
+                    local_cooldown=exc.local_cooldown,
+                )
+            elif isinstance(exc, requests.HTTPError) and exc.response is not None:
+                audit["http_status"] = exc.response.status_code
             self._log(
                 "planner_hold"
                 if audit.get("planner_status") in {"complete", "uncertain"}
@@ -416,6 +465,11 @@ class VisionLanguagePlanner:
         timeout = self.config.timeout_s
         deadline = time.perf_counter() + timeout
         with self._request_lock:
+            cooldown = self._retry_not_before - time.perf_counter()
+            if cooldown > 0:
+                raise PlannerRateLimitError(
+                    cooldown, provider_retry_after=self._provider_retry_after, local_cooldown=True
+                )
             if self._pending_request is not None and not self._pending_request.done():
                 raise RuntimeError(
                     "Previous planner request is still finishing; action production remains held"
@@ -445,6 +499,18 @@ class VisionLanguagePlanner:
                 raise TimeoutError("Planner request timed out; late responses are discarded")
             try:
                 result = future.result(timeout=min(0.05, remaining))
+            except requests.HTTPError as exc:
+                if exc.response is None or exc.response.status_code != 429:
+                    raise
+                retry_after = _retry_after_seconds(exc.response.headers.get("Retry-After"))
+                # This fallback is our retry floor, not an assertion about provider quota reset.
+                cooldown = max(1.0, retry_after) if retry_after is not None else 30.0
+                with self._request_lock:
+                    self._retry_not_before = time.perf_counter() + cooldown
+                    self._provider_retry_after = retry_after is not None
+                raise PlannerRateLimitError(
+                    cooldown, provider_retry_after=retry_after is not None, local_cooldown=False
+                ) from None
             except TimeoutError:
                 if future.done():
                     raise  # Transport itself failed; do not retry a completed future.

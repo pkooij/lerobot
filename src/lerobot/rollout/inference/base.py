@@ -26,12 +26,14 @@ import logging
 import time
 from collections import deque
 from collections.abc import Callable
+from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from enum import Enum
 from threading import Lock
 
 import torch
 
+from lerobot.rollout.planner import PlannerRateLimitError
 from lerobot.utils.constants import QUERY_KIND, QUERY_TEXT
 
 logger = logging.getLogger(__name__)
@@ -375,7 +377,10 @@ class InferenceEngine(abc.ABC):
                     f"generate_text() must return a non-empty str, got {text!r} ({type(text).__name__})"
                 )
         except Exception as e:
-            logger.exception("Policy text query failed (%s) for %r", query.kind.value, query.text)
+            if isinstance(e, (PlannerRateLimitError, CancelledError)):
+                logger.warning("Policy text query stopped (%s): %s", query.kind.value, e)
+            else:
+                logger.exception("Policy text query failed (%s) for %r", query.kind.value, query.text)
             if query.kind is QueryKind.NEXT_SUBTASK and not self._fail_subtask(query):
                 return True  # the sequencer this turn belonged to is gone; discard
             self._publish_answer(

@@ -3,19 +3,22 @@
 import json
 import runpy
 import threading
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from pathlib import Path
 from unittest.mock import Mock
 
 import draccus
 import numpy as np
 import pytest
+import requests
 
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.language_task import task_from_recipe
 from lerobot.datasets.recipe import TrainingRecipe
 from lerobot.policies.wall_x.configuration_wall_x import WallXConfig  # noqa: F401
 from lerobot.rollout.inference.sync import SyncInferenceEngine
-from lerobot.rollout.planner import PlannerConfig, VisionLanguagePlanner
+from lerobot.rollout.planner import PlannerConfig, VisionLanguagePlanner, _retry_after_seconds
 from tests.test_interactive_rollout import _FakeEngine, _make_ctx, _serve_thread
 
 
@@ -720,3 +723,82 @@ def test_stop_exits_control_thread_while_planner_transport_is_stalled(monkeypatc
     assert any(event.get("error_type") == "CancelledError" for event in events)
     assert not any(event["event"] == "planner_returned" for event in events)
     response.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "header,expected,from_provider", [("120", 120, True), (None, 30, False), ("nan", 30, False)]
+)
+def test_rate_limit_holds_actions_blocks_retries_and_logs_only_safe_metadata(
+    monkeypatch, tmp_path, caplog, header, expected, from_provider
+):
+    rejected = requests.Response()
+    rejected.status_code = 429
+    rejected._content = b'{"error":"test-only-secret"}'
+    rejected._content_consumed = True
+    if header is not None:
+        rejected.headers["Retry-After"] = header
+    decision = {
+        "style": "subtask",
+        "command": "reach for the blue block",
+        "camera": None,
+        "points": [],
+        "point_mode": None,
+        "assessment": "block visible",
+        "status": "continue",
+    }
+    accepted = Mock(
+        json=lambda: {
+            "status": "completed",
+            "output": [{"content": [{"type": "output_text", "text": json.dumps(decision)}]}],
+        }
+    )
+    post = Mock(side_effect=[rejected, accepted])
+    monkeypatch.setattr("lerobot.rollout.planner.requests.post", post)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only-secret")
+    now = [100.0]
+    monkeypatch.setattr("lerobot.rollout.planner.time.perf_counter", lambda: now[0])
+    log = tmp_path / "planner.jsonl"
+    planner = VisionLanguagePlanner(PlannerConfig(camera_keys=["base"], log_path=str(log)))
+    engine = _FakeEngine()
+    engine.set_language_planner(planner)
+    answers = []
+    engine.set_answer_observer(answers.append)
+    observation = {"base": np.zeros((48, 64, 3), dtype=np.uint8)}
+    initial_task = engine.task
+    engine.start_autosteer("goal", 2)
+    engine.pump_query(observation)
+    assert engine.planner_halted and engine.autosteer_goal is None
+    assert engine.task == initial_task and planner._history == []
+    assert "HTTP 429" in answers[-1].error
+    assert f"Wait at least {expected}s" in answers[-1].error
+    assert SyncInferenceEngine.get_action(engine, observation) is None
+
+    engine.start_autosteer("goal", 2)
+    engine.pump_query(observation)
+    assert "Planner cooldown" in answers[-1].error
+    assert engine.planner_halted and engine.autosteer_goal is None
+    assert post.call_count == 1
+    now[0] += expected + 1
+    engine.pump_query(observation)
+    assert post.call_count == 1  # Cooldown expiry does not resume by itself.
+
+    engine.start_autosteer("goal", 2)
+    engine.pump_query(observation)
+    assert post.call_count == 2 and not engine.planner_halted
+    assert engine.task == "reach for the blue block"
+    events = [json.loads(line) for line in log.read_text().splitlines()]
+    errors = [e for e in events if e["event"] == "planner_error"]
+    assert len(errors) == 2
+    assert errors[0]["http_status"] == 429
+    assert errors[0]["retry_after_s"] == expected
+    assert errors[0]["provider_retry_after"] is from_provider
+    assert not errors[0]["local_cooldown"] and errors[1]["local_cooldown"]
+    assert "test-only-secret" not in log.read_text() + caplog.text
+    assert not any(r.exc_info for r in caplog.records)
+
+
+def test_retry_after_accepts_http_date_and_rejects_invalid_values():
+    future = datetime.now(UTC) + timedelta(seconds=120)
+    assert 118 <= _retry_after_seconds(format_datetime(future, usegmt=True)) <= 120
+    for value in [None, "", "not a date", "nan", "inf", "-1"]:
+        assert _retry_after_seconds(value) is None
