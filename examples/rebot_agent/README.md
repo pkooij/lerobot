@@ -1,7 +1,7 @@
-# Steerable ReBot policy with Astra planning
+# Steerable ReBot policy with Qwen planning
 
 This experiment uses LeRobot main's datasets, language recipes, WALL-OSS-Flow,
-processors, rollout strategies, and `/autosteer` controller. Astra chooses a steering
+processors, rollout strategies, and `/autosteer` controller. Qwen chooses a steering
 instruction from images and recent observation/command history. The VLA produces
 all robot actions. There is no separate hybrid runtime or direct-action tool service.
 
@@ -156,35 +156,34 @@ configuration and processor assets without fetching its weights again. Non-stric
 partial restores still load base weights to fill missing tensors; strict restores
 reject incomplete checkpoints.
 
-## Use Astra through the language runtime
+## Use Qwen through the language runtime
 
 Add these options to your existing, calibrated `lerobot-rollout` command, keeping
 its robot ports/cameras and trained `--policy.path`:
 
 ```bash
 --interactive=true --inference.type=sync --interpolation_multiplier=1 \
---planner.enabled=true --planner.model=gpt-6-astra \
+--planner.enabled=true \
+--planner.api_format=chat_completions \
+--planner.api_base=https://router.huggingface.co/v1 \
+--planner.api_key_env=HF_TOKEN \
+--planner.model=Qwen/Qwen3.8-Flash-Next:featherless-ai \
+--planner.enable_thinking=false --planner.max_output_tokens=2048 \
 --planner.camera_keys='["base","left_wrist","right_wrist"]' \
 --planner.styles='["task","subtask"]' \
 --planner.log_path=outputs/rebot_planner/decisions.jsonl \
 --autosteer_interval_s=2
 ```
 
-Set `OPENAI_API_KEY` on the robot host. Use an API model ID available to that account;
-model access has not been tested here. Rollout rejects a missing or blank configured
+Set `HF_TOKEN` on the robot host using its existing Hugging Face credential, with
+Inference Providers permission. Keep credentials outside configuration files and logs.
+Rollout rejects a missing or blank configured
 API key before loading policy weights or connecting hardware. This local check does
 not validate endpoint access or credentials; API failures still hold action production.
 
-For Hugging Face Inference Providers, use its Chat Completions endpoint and a token
-with Inference Providers permission in `HF_TOKEN`. For example:
-
-```bash
---planner.api_format=chat_completions \
---planner.api_base=https://router.huggingface.co/v1 \
---planner.api_key_env=HF_TOKEN \
---planner.model=Qwen/Qwen3.8-Flash-Next:featherless-ai \
---planner.enable_thinking=false --planner.max_output_tokens=2048
-```
+The selected runtime planner is Qwen through Hugging Face Inference Providers.
+The adapter also retains the existing Responses transport for other configurations;
+there is no fallback to Astra or Gemini in this experiment.
 
 Verify the chosen provider supports image inputs and the strict JSON response schema
 with saved observations before connecting hardware. Both transports use the same named
@@ -202,6 +201,12 @@ Featherless route returned empty final answers with its default thinking mode an
 constrained JSON decoding during our saved-observation checks; disabling thinking
 produced a structured decision. Verify this setting for the chosen model/provider.
 
+Saved-observation checks exercised Qwen-to-VLA commands and rejected malformed
+responses without producing actions. A subsequent four-response visual check on
+two repeated images found one incorrect point pair. Structured-output validation
+does not validate target grounding; these checks establish neither reliable physical
+pointing nor pick-and-place success.
+
 Camera keys refer to processed robot
 observations. After `/start`, the external planner keeps the VLA idle until you enter:
 
@@ -209,7 +214,7 @@ observations. After `/start`, the external planner keeps the VLA idle until you 
 /autosteer Put the white tape roll into the black bin.
 ```
 
-Astra observes and emits a command, the VLA acts, and Astra observes again. Extend
+Qwen observes and emits a command, the VLA acts, and Qwen observes again. Extend
 `planner.styles` to `motion`, `point`, and `combination` only for a checkpoint
 trained and validated on those styles. For coordinate commands, also set
 `--planner.grounding_camera_keys='["base"]'` (or the other views actually trained

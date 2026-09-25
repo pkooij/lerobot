@@ -1,6 +1,6 @@
 # Steerable ReBot with a high-level vision-language planner
 
-Train WALL-OSS-Flow to follow diverse steering commands, then use Astra to choose
+Train WALL-OSS-Flow to follow diverse steering commands, then use Qwen to choose
 those commands from images. LeRobot's existing rollout controller, inference engine,
 processors, and language runtime execute the VLA. The planner only supplies text.
 
@@ -31,7 +31,7 @@ training code consumes precomputed annotations; it is not a complete ReBot extra
 | Command composition | `prepare_steering.py` builds grounded template variants; a VLM paraphrasing stage is still an extension                                |
 | Annotation review   | Astra inspects timestamped source images and proposed commands; accepted/uncertain/rejected results are saved                          |
 | Training            | Fresh uniform sampling among reviewed alternatives on each visit; 20% overall tasks is our chosen mixture                              |
-| Planning            | Astra through main's `/autosteer`, with bounded visual history; VLA remains the action controller                                      |
+| Planning            | Qwen through main's `/autosteer`, with bounded visual history; VLA remains the action controller                                       |
 
 This is a paper-guided adaptation, not a completed reproduction. Configuring visual
 styles does not generate their training labels. Start with the semantic baseline;
@@ -537,10 +537,19 @@ After validating checkpoint reload, add these flags to an existing calibrated
 ReBot rollout command with `--policy.path=/path/to/checkpoint`:
 
 ```bash
---interactive=true --inference.type=sync --planner.enabled=true \
---planner.model=gpt-6-astra --planner.camera_keys='["base","left_wrist","right_wrist"]' \
+--interactive=true --inference.type=sync --interpolation_multiplier=1 --planner.enabled=true \
+--planner.api_format=chat_completions --planner.api_base=https://router.huggingface.co/v1 \
+--planner.api_key_env=HF_TOKEN --planner.model=Qwen/Qwen3.8-Flash-Next:featherless-ai \
+--planner.enable_thinking=false --planner.max_output_tokens=2048 \
+--planner.camera_keys='["base","left_wrist","right_wrist"]' \
 --planner.styles='["task","subtask"]' --autosteer_interval_s=2
 ```
+
+Use an existing Hugging Face credential with Inference Providers permission in
+`HF_TOKEN`; do not store its value in the run configuration. This selects the
+Featherless Chat Completions route without automatic fallback. The Responses adapter
+remains available for other configurations. See the example README for saved-image
+checks and the observed grounding limitations; valid JSON does not prove correct points.
 
 Enter `/start`, then `/autosteer <overall goal>`. The external planner holds action
 production until its first command. It uses the existing text-query channel; task
@@ -577,7 +586,7 @@ adapts the paper's 0–255 convention; keep it consistent at training and infere
 ## Validation milestone
 
 Evaluate 50 attempts with known resets and an outcome rubric. Compare task-only,
-semantic-subtask Astra planning, and all validated styles under matched conditions.
+semantic-subtask Qwen planning, and all validated styles under matched conditions.
 Measure completion, instruction compliance, arm/direction/point accuracy, command
 switching, planning latency, and performance on distractors and paraphrases. Preserve
 failure/unknown outcomes. Store Astra's assessment separately from an operator label.

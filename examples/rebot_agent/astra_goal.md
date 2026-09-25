@@ -1,4 +1,10 @@
-# Goal: train a highly steerable ReBot VLA and use Astra as its high-level planner
+# Goal: train a highly steerable ReBot VLA and use Qwen as its high-level planner
+
+The runtime planner is `Qwen/Qwen3.8-Flash-Next:featherless-ai` through Hugging Face
+Inference Providers at `https://router.huggingface.co/v1`. This supersedes the earlier
+Astra and Gemini runtime choices. Use the Chat Completions adapter, `HF_TOKEN`, and
+`enable_thinking=false`; never put credential values in code, prompts, or evidence.
+Keep this file's existing name for links from earlier experiment artifacts.
 
 Build and evaluate a real-world pick-and-place system following Steerable Policies:
 https://steerable-policies.github.io/ and
@@ -8,13 +14,14 @@ https://github.com/steerable-policies/steerable-policies-bridge
 Use LeRobot main's existing language runtime and training stack wherever possible.
 Work only on `codex/rebot-physical-agent-loop`. Do not create, reopen, or merge pull
 requests. The earlier draft PR was closed at the user's request; preserve the branch.
-The VLA is the sole robot-action controller. Astra receives current images, the overall
+The VLA is the sole robot-action controller. Qwen receives current images, the overall
 task, and a bounded history of observations and issued commands; it chooses the next
 steering instruction and evaluates progress. Do not build a hybrid action arbitration
 loop, direct IK/joint/gripper action tools, or an intervention-based DAgger system.
 Language commands such as “move the left gripper upward” are VLA inputs, never direct
-motor commands. Astra is primarily the high-level planner and also reviews annotations
-and evaluation evidence. Its success judgments remain distinct from operator labels.
+motor commands. Qwen is the high-level runtime planner. Attribute annotation reviews
+and evaluation evidence to the model that actually produced them; preserve historical
+reviewer identities. Model success judgments remain distinct from operator labels.
 
 ## Fixed context
 
@@ -77,7 +84,7 @@ Do not independently crop/flip images without transforming every coordinate labe
 The checked-in compiler supplies deterministic grounded variants; richer VLM wording
 must keep verified geometry and semantic meaning unchanged.
 
-Have Astra review command/feature alignment against timestamped video and report
+Have the reviewing model assess command/feature alignment against timestamped video and report
 accepted, rejected, or uncertain, with concise visual evidence. The operator has
 explicitly declined manual annotation: do not request human boxes, annotation review,
 or label confirmation. Use measured state for gripper opening/closing and calibrated
@@ -114,7 +121,7 @@ validated semantic/motion styles, but exclude gripper traces by default. Trace l
 can still support VLA training and controlled steering tests.
 
 Deploy the checkpoint with main's `lerobot-rollout --interactive=true --inference.type=sync`
-and the external planner adapter. Astra selects among styles this checkpoint has
+and the external planner adapter. Qwen selects among styles this checkpoint has
 actually learned; visual history helps it change abstraction when progress stalls.
 Verify camera views against the dataset and confirm physical wrist identities before
 rollout. Device indices and USB serial names can collide or change; use verified
@@ -129,16 +136,16 @@ failure, uncertainty, or completion assessment should hold action production pen
 an explicit next instruction. Do not confuse an issued command with observed execution.
 
 Collect 50 real-world evaluation attempts including failures and unknown outcomes.
-Compare task-only prompting, semantic-subtask planning, and full multi-style Astra
+Compare task-only prompting, semantic-subtask planning, and full multi-style Qwen
 planning on matched objects, initial states, and task instructions. Measure success,
 command compliance, direction/arm/point accuracy, recovery through language, latency,
 and command-style choice. Include paraphrases, distractors, novel objects, and multi-step
-tasks. Record Astra assessments separately from operator-verified outcomes. Improve
+tasks. Record planner assessments separately from operator-verified outcomes. Improve
 annotations, prompt, policy, and code from evidence; additional human demonstrations
 may support later behavioral cloning. Do not claim improved success from offline loss.
 
 Continue useful independent work when a dependency is missing. Report exact blockers:
 cluster access, authoritative URDF/calibration, extracted visual features, credentials,
 or robot configuration. Never mark the goal achieved solely because code/configuration
-exists. Deliver reviewed annotations, trained/reloadable checkpoints, the working Astra
+exists. Deliver reviewed annotations, trained/reloadable checkpoints, the working Qwen
 planner setup, and measured physical results with remaining limitations explicit.
