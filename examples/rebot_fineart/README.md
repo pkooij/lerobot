@@ -46,6 +46,17 @@ tests causal inference with self-generated subtasks and no future targets in
 the policy input. Neither diagnostic measures physical success. Consult
 `status.json` before scheduling: cancelled validation jobs may require clarification.
 
+The task-only run developed large pre-clipping gradients and logged infinite
+norms around steps 3,600–3,700, despite finite scalar losses. `audit_gradients.py`
+probes checkpoints 1,000 and 3,000 with fixed batches of 16 frames from three
+training episodes. It reports the largest parameter gradients, counts nonfinite
+elements, computes norms in float64, and records what native clipping does to
+the in-memory gradients. It creates no optimizer and never writes model weights.
+This single-rank probe does not reproduce the original four-rank batches exactly;
+it is prepared but has not run on the GPU. Its helper tests distinguish finite
+gradient reduction overflow from actual nonfinite gradient elements. Neither
+finite losses nor gradient clipping alone establishes a healthy training run.
+
 The experiment copies metadata and computes state/action normalization from
 117,379 training frames only. Original data, videos, and checkpoint weights
 remain unchanged. ReBot's actual ordered joint names replace the ALOHA names in the
