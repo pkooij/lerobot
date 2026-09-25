@@ -169,6 +169,7 @@ its robot ports/cameras and trained `--policy.path`:
 --planner.api_key_env=HF_TOKEN \
 --planner.model=Qwen/Qwen3.8-Flash-Next:featherless-ai \
 --planner.enable_thinking=false --planner.max_output_tokens=2048 \
+--planner.output_coordinate_format=normalized_1000 \
 --planner.camera_keys='["base","left_wrist","right_wrist"]' \
 --planner.styles='["task","subtask"]' \
 --planner.log_path=outputs/rebot_planner/decisions.jsonl \
@@ -200,6 +201,16 @@ Chat Completions setting, passed as `chat_template_kwargs.enable_thinking`. The
 Featherless route returned empty final answers with its default thinking mode and
 constrained JSON decoding during our saved-observation checks; disabling thinking
 produced a structured decision. Verify this setting for the chosen model/provider.
+
+`output_coordinate_format=normalized_1000` explicitly requests integer coordinates
+from 0 to 1000 along each axis. The adapter maps pixel-center endpoints with
+`round(x * (width - 1) / 1000)` and `round(y * (height - 1) / 1000)` for the named
+camera, then uses the existing original-pixel command renderer and saved VLA processor.
+Source annotations and policy tokenization keep their existing format. Proposal logs
+and planner history retain the model's normalized points; returned-command logs also
+store the converted pixels. The default `original_pixels` preserves other planner
+configurations. There is no automatic format guessing: in-range values alone cannot
+prove either the coordinate convention or correct object grounding.
 
 Saved-observation checks exercised Qwen-to-VLA commands and rejected malformed
 responses without producing actions. A subsequent four-response visual check on

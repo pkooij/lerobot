@@ -37,6 +37,8 @@ class PlannerConfig:
     grounding_camera_keys: list[str] = field(default_factory=list)
     # Set from the deployed checkpoint's command coverage, e.g. two pick/place targets.
     target_point_count: int | None = None
+    # Planner response coordinates only; commands passed to the VLA always use original pixels.
+    output_coordinate_format: str = "original_pixels"
     # Enable additional styles only after training and validating their annotations.
     styles: list[str] = field(default_factory=lambda: ["task", "subtask"])
     # Atomic motion wording supported by the deployed checkpoint, taken from its training manifest.
@@ -48,6 +50,8 @@ class PlannerConfig:
     def __post_init__(self):
         if self.api_format not in {"responses", "chat_completions"}:
             raise ValueError("Planner api_format must be responses or chat_completions")
+        if self.output_coordinate_format not in {"original_pixels", "normalized_1000"}:
+            raise ValueError("Planner output_coordinate_format must be original_pixels or normalized_1000")
         if isinstance(self.max_output_tokens, bool) or self.max_output_tokens <= 0:
             raise ValueError("Planner max_output_tokens must be positive")
         if self.enable_thinking is not None and self.api_format != "chat_completions":
@@ -134,6 +138,7 @@ class VisionLanguagePlanner:
             "session": session,
             "model": self.config.model,
             "api_format": self.config.api_format,
+            "output_coordinate_format": self.config.output_coordinate_format,
         }
         self._log("planner_request", audit)
         try:
@@ -180,6 +185,12 @@ class VisionLanguagePlanner:
                 raise ValueError(f"Planner camera {key!r} missing; available: {sorted(observation)}")
             content.extend(image_content(observation[key], key))
         user = {"role": "user", "content": content}
+        normalized = self.config.output_coordinate_format == "normalized_1000"
+        coordinate_units = (
+            "normalized independently to integers in [0, 1000] along each image axis"
+            if normalized
+            else "in original pixels"
+        )
         schema = {
             "type": "object",
             "additionalProperties": False,
@@ -194,7 +205,7 @@ class VisionLanguagePlanner:
                 "camera": {"type": ["string", "null"], "enum": [*self.config.grounding_camera_keys, None]},
                 "points": {
                     "type": "array",
-                    "description": "Empty for task/subtask/motion. Ordered original-pixel targets for visual styles.",
+                    "description": f"Empty for task/subtask/motion. Ordered targets {coordinate_units}.",
                     "items": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
                 },
                 "point_mode": {"type": ["string", "null"], "enum": ["targets", "path", None]},
@@ -203,6 +214,8 @@ class VisionLanguagePlanner:
             },
             "required": ["command", "camera", "points", "point_mode", "style", "assessment", "status"],
         }
+        if normalized:
+            schema["properties"]["points"]["items"]["items"].update(minimum=0, maximum=1000)
         payload = {
             "model": self.config.model,
             "max_output_tokens": self.config.max_output_tokens,
@@ -215,7 +228,7 @@ class VisionLanguagePlanner:
                 "motions describe arm-specific movement; points identify visible targets; traces describe a gripper path; "
                 "combinations join compatible styles. Name the left or right arm when relevant. "
                 "Unless trace is an allowed style, do not generate gripper paths, including in combinations. "
-                "For visual commands return the camera and ordered integer [x, y] points in original pixels, "
+                f"For visual commands return the camera and ordered integer [x, y] points {coordinate_units}, "
                 "separately from command wording. Do not put coordinates in the command string: the runtime inserts them. "
                 "Only use the cameras allowed by the camera schema for coordinate commands; other views provide context. "
                 "Set point_mode=targets for object/destination keypoints (including a source and destination pair); "
@@ -239,6 +252,13 @@ class VisionLanguagePlanner:
                 }
             },
         }
+        if normalized:
+            payload["instructions"] += (
+                " Use normalized coordinates consistently for EVERY point: [0,0] is the top-left pixel center, "
+                "[1000,1000] is the bottom-right pixel center, [500,500] is the image center. "
+                "Do not return original-image pixel coordinates. Image dimensions describe the source view, "
+                "not the requested output coordinate range."
+            )
         payload["instructions"] += (
             " The checkpoint's supported atomic motion commands are: "
             + json.dumps(self.config.motion_commands)
@@ -289,6 +309,22 @@ class VisionLanguagePlanner:
                 raise ValueError("Planner selected a camera without trained coordinate grounding")
             shape = observation[camera].shape
             height, width = shape[:2] if shape[-1] == 3 else shape[1:]
+            if normalized:
+                for point in render["points"]:
+                    if (
+                        not isinstance(point, list)
+                        or len(point) != 2
+                        or any(type(v) is not int or not 0 <= v <= 1000 for v in point)
+                    ):
+                        raise ValueError("Normalized points must be integer pairs in [0, 1000]")
+                # Convert exactly once, using the selected camera's pixel-center endpoints.
+                # Keep the original decision in model history and proposal logs in response units.
+                render["points"] = [
+                    [round(x * (width - 1) / 1000), round(y * (height - 1) / 1000)]
+                    for x, y in render["points"]
+                ]
+            audit["rendered_points"] = render["points"]
+            audit["rendered_image_size"] = [width, height]
             render.update(camera=camera, image_size=[width, height])
         elif decision.get("camera") is not None or decision.get("point_mode") is not None:
             raise ValueError("Commands without points must have null camera and point mode")

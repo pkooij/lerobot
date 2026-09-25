@@ -541,6 +541,7 @@ ReBot rollout command with `--policy.path=/path/to/checkpoint`:
 --planner.api_format=chat_completions --planner.api_base=https://router.huggingface.co/v1 \
 --planner.api_key_env=HF_TOKEN --planner.model=Qwen/Qwen3.8-Flash-Next:featherless-ai \
 --planner.enable_thinking=false --planner.max_output_tokens=2048 \
+--planner.output_coordinate_format=normalized_1000 \
 --planner.camera_keys='["base","left_wrist","right_wrist"]' \
 --planner.styles='["task","subtask"]' --autosteer_interval_s=2
 ```
@@ -550,6 +551,8 @@ Use an existing Hugging Face credential with Inference Providers permission in
 Featherless Chat Completions route without automatic fallback. The Responses adapter
 remains available for other configurations. See the example README for saved-image
 checks and the observed grounding limitations; valid JSON does not prove correct points.
+The explicit normalized planner response format is converted to original pixels before
+command rendering. It does not change native dataset annotations or the VLA tokenizer.
 
 Enter `/start`, then `/autosteer <overall goal>`. The external planner holds action
 production until its first command. It uses the existing text-query channel; task

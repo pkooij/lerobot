@@ -505,3 +505,103 @@ def test_planner_observes_all_views_but_limits_coordinate_commands(monkeypatch):
     with pytest.raises(ValueError, match="trace steering"):
         planner(observation, "goal", 1)
     assert len(planner._history) == 2  # Rejected proposals never become issued-command history.
+
+
+@pytest.mark.parametrize("api_format", ["responses", "chat_completions"])
+@pytest.mark.parametrize("channels_first", [False, True])
+def test_normalized_planner_points_use_selected_camera_and_preserve_history(
+    monkeypatch, tmp_path, api_format, channels_first
+):
+    decision = {
+        "style": "point",
+        "command": "pick at the first point and place at the second point",
+        "camera": "base",
+        "points": [[0, 1000], [500, 500]],
+        "point_mode": "targets",
+        "assessment": "two visible targets",
+        "status": "continue",
+    }
+    wire_text = json.dumps(decision)
+    result = (
+        {"choices": [{"finish_reason": "stop", "message": {"content": wire_text}}]}
+        if api_format == "chat_completions"
+        else {"status": "completed", "output": [{"content": [{"type": "output_text", "text": wire_text}]}]}
+    )
+    post = Mock(return_value=Mock(json=lambda: result))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setattr("lerobot.rollout.planner.requests.post", post)
+    log = tmp_path / "decisions.jsonl"
+    planner = VisionLanguagePlanner(
+        PlannerConfig(
+            api_format=api_format,
+            camera_keys=["wrist", "base"],
+            grounding_camera_keys=["base"],
+            styles=["point"],
+            target_point_count=2,
+            output_coordinate_format="normalized_1000",
+            log_path=str(log),
+        )
+    )
+    base = np.zeros((480, 640, 3), dtype=np.uint8)
+    observation = {
+        "base": base.transpose(2, 0, 1) if channels_first else base,
+        "wrist": np.zeros((120, 160, 3), dtype=np.uint8),
+    }
+    command = planner(observation, "goal", 0)
+    assert "base view (640x480 pixels)" in command
+    assert "[0, 479], [320, 240]" in command
+    assert planner._history[-1]["content"] == wire_text
+    events = [json.loads(line) for line in log.read_text().splitlines()]
+    proposal = next(event for event in events if event["event"] == "planner_proposal")
+    returned = next(event for event in events if event["event"] == "planner_returned")
+    assert proposal["points"] == [[0, 1000], [500, 500]]
+    assert proposal["output_coordinate_format"] == "normalized_1000"
+    assert returned["rendered_points"] == [[0, 479], [320, 240]]
+    assert returned["rendered_image_size"] == [640, 480]
+    payload = post.call_args.kwargs["json"]
+    schema = (
+        payload["response_format"]["json_schema"]["schema"]
+        if api_format == "chat_completions"
+        else payload["text"]["format"]["schema"]
+    )
+    assert schema["properties"]["points"]["items"]["items"] == {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 1000,
+    }
+    instructions = (
+        payload["messages"][0]["content"] if api_format == "chat_completions" else payload["instructions"]
+    )
+    assert "[1000,1000] is the bottom-right pixel center" in instructions
+
+
+@pytest.mark.parametrize("bad_point", [[1001, 500], [-1, 500], [True, 500], [1.5, 500], [1], "500,500"])
+def test_normalized_planner_rejects_invalid_coordinates_without_history(monkeypatch, bad_point):
+    planner = VisionLanguagePlanner(
+        PlannerConfig(
+            camera_keys=["base"],
+            grounding_camera_keys=["base"],
+            styles=["point"],
+            output_coordinate_format="normalized_1000",
+            target_point_count=2,
+        )
+    )
+    decision = {
+        "style": "point",
+        "command": "pick and place",
+        "camera": "base",
+        "points": [bad_point, [500, 500]],
+        "point_mode": "targets",
+        "assessment": "targets visible",
+        "status": "continue",
+    }
+    monkeypatch.setattr(planner, "_request", lambda payload: (json.dumps(decision), None))
+    with pytest.raises(ValueError, match="Normalized points must be integer pairs"):
+        planner({"base": np.zeros((480, 640, 3), dtype=np.uint8)}, "goal", 0)
+    assert planner._history == []
+
+
+def test_planner_coordinate_format_is_explicit():
+    assert PlannerConfig().output_coordinate_format == "original_pixels"
+    with pytest.raises(ValueError, match="output_coordinate_format"):
+        PlannerConfig(output_coordinate_format="auto")

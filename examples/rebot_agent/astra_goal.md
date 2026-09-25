@@ -4,6 +4,9 @@ The runtime planner is `Qwen/Qwen3.8-Flash-Next:featherless-ai` through Hugging 
 Inference Providers at `https://router.huggingface.co/v1`. This supersedes the earlier
 Astra and Gemini runtime choices. Use the Chat Completions adapter, `HF_TOKEN`, and
 `enable_thinking=false`; never put credential values in code, prompts, or evidence.
+Use `output_coordinate_format=normalized_1000` for Qwen's visual responses and convert
+through the planner adapter to original-image pixels before rendering VLA commands.
+Never guess a response's units from its numeric range or change dataset coordinates.
 Keep this file's existing name for links from earlier experiment artifacts.
 
 Build and evaluate a real-world pick-and-place system following Steerable Policies:
