@@ -54,6 +54,20 @@ Every sample resets policy state and seeds generation and action sampling, so
 the same observations can be compared across checkpoints. These options have
 been syntax checked; actual checkpoint inference remains pending GPU validation.
 
+For the reported jerky movement, the causal checker now records first-action
+minus observed-state offsets and within-chunk action differences alongside the
+demonstration. Optional `--replan-after 10` adds a second prediction ten frames
+after each anchor, measuring the jump from the previous chunk's last executed
+action to the new chunk's first action, plus disagreement on their overlapping
+future interval. Choose the offset to match the intended runtime execution horizon.
+Metrics exclude padded targets and retain each joint's native dataset units;
+joint angles and grippers are not collapsed into a mixed-unit scalar. Reports
+with paired predictions use a separate `_replan10` suffix. These are raw action
+diagnostics without runtime clipping/filtering. Subsequent observations come from
+the demonstration, so this is not a closed-loop simulation or proof of physical
+smoothness. Sampling randomness and regenerated subtasks can both affect the
+boundary. Metric helper tests pass; checkpoint inference remains pending.
+
 The task-only run developed large pre-clipping gradients and logged infinite
 norms around steps 3,600–3,700, despite finite scalar losses. `audit_gradients.py`
 probes checkpoints 1,000 and 3,000 with fixed batches of 16 frames from three

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from motion_metrics import chunk_motion, replan_motion
 
 from lerobot.datasets.language_render import active_at
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -40,9 +41,14 @@ def main():
     )
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     parser.add_argument("--load-only", action="store_true")
+    parser.add_argument(
+        "--replan-after", type=int, help="Also predict again this many frames after each anchor"
+    )
     args = parser.parse_args()
     if args.step is not None and args.step <= 0:
         parser.error("--step must be positive")
+    if args.replan_after is not None and (args.replan_after <= 0 or args.load_only):
+        parser.error("--replan-after must be positive and requires inference")
     assert args.device == "cuda" or args.load_only, "CPU gate checks reload only"
     split = json.loads((ROOT / "split.json").read_text())
     goals = json.loads((ROOT / "episode_goals.json").read_text())
@@ -52,6 +58,8 @@ def main():
     selection = (
         f"_{steps}_{'-'.join(args.variants)}" if args.step is not None or len(args.variants) != 2 else ""
     )
+    if args.replan_after is not None:
+        selection += f"_replan{args.replan_after}"
     destination = ROOT / f"reload_{args.phase}_{args.device}_{args.job}{selection}.json"
     reports = {}
     for variant in args.variants:
@@ -64,6 +72,8 @@ def main():
             while block := stream.read(16 * 1024**2):
                 digest.update(block)
         cfg = PI052Config.from_pretrained(checkpoint)
+        if args.replan_after is not None and args.replan_after >= cfg.chunk_size:
+            parser.error("--replan-after must be smaller than the saved action chunk size")
         cfg.device = args.device
         policy = PI052Policy.from_pretrained(checkpoint, config=cfg).to(args.device).eval()
         assert policy.supports_text_generation() == (variant == "subtask")
@@ -83,8 +93,19 @@ def main():
                 video_backend="pyav",
                 delta_timestamps={"action": [i / 30 for i in range(cfg.chunk_size)]},
             )
-            for fraction in [0.5] if args.load_only else [0.1, 0.5, 0.85]:
-                index = min(int(len(dataset) * fraction), len(dataset) - 1)
+            anchors = [
+                min(int(len(dataset) * fraction), len(dataset) - 1)
+                for fraction in ([0.5] if args.load_only else [0.1, 0.5, 0.85])
+            ]
+            partners = {}
+            if args.replan_after is not None:
+                partners = {
+                    index + args.replan_after: index
+                    for index in anchors
+                    if index + args.replan_after < len(dataset)
+                }
+            chunks = {}
+            for index in sorted(set(anchors) | partners.keys()):
                 item = dataset[index]
                 # Only the anchor's images/state and the given episode goal enter the policy.
                 # Annotation rows, future actions, timestamps and labels never enter inference.
@@ -130,6 +151,15 @@ def main():
                     target = item["action"].cpu().numpy()
                     valid = ~item["action_is_pad"].cpu().numpy().astype(bool)
                     assert valid.any()
+                    row["motion"] = chunk_motion(
+                        predicted, target, item["observation.state"].cpu().numpy(), valid
+                    )
+                    chunks[index] = {"predicted": predicted, "target": target, "valid": valid}
+                    if index in partners:
+                        row["replan_from_frame"] = partners[index]
+                        row["replan_motion"] = replan_motion(
+                            chunks[partners[index]], chunks[index], args.replan_after
+                        )
                     row["action_normalized_mse"] = float(
                         np.square((predicted[valid] - target[valid]) / action_std).mean()
                     )
@@ -166,6 +196,13 @@ def main():
         "inference_inputs": "current images/state and supplied task only",
         "episodes": split["dev"],
         "test_episodes_unused": split["test"],
+        "motion_units": "Per-joint native dataset units; no clipping, filtering or unit conversion",
+        "replan_after_frames": args.replan_after,
+        "replan_limitation": (
+            "Paired predictions use subsequent recorded observations, not states caused by predicted actions. "
+            "Boundary metrics splice raw chunks at the requested offset; independently seeded action sampling "
+            "and any generated subtask change both contribute. They do not measure closed-loop smoothness."
+        ),
         "limitation": "Offline replay and reload checks; no physical success measurement.",
     }
     destination.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
