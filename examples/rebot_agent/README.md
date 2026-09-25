@@ -156,6 +156,31 @@ configuration and processor assets without fetching its weights again. Non-stric
 partial restores still load base weights to fill missing tensors; strict restores
 reject incomplete checkpoints.
 
+For a robot host with those assets stored locally, prepare a separate runtime copy
+before starting rollout:
+
+```bash
+uv run examples/rebot_agent/prepare_wallx_deployment.py \
+  --checkpoint /path/to/selected/pretrained_model \
+  --base-assets /path/to/local/base_assets \
+  --output /path/to/fresh/runtime_pretrained_model \
+  --expected-sha256 SELECTED_MODEL_SHA256 \
+  --observation /path/to/recorded_observation.npz \
+  --task 'Pick up the white tape roll and place it into the black bin.'
+```
+
+The helper checks the selected weights' SHA-256 and the saved policy/tokenizer
+agreement, links weights and normalizer tensors, and changes only the base-asset
+locations in copied configuration files. It preserves the source checkpoint and
+trained coordinate format. Keep the source weights and base assets at their verified
+paths: the runtime copy references them. Use this copy as `--policy.path`.
+With `--observation` and `--task`, it restores both saved processor pipelines on CPU
+in offline mode and checks recorded inputs and finite postprocessed actions. Images
+in the NPZ must be uint8 CHW arrays under the checkpoint's observation keys. Repeat
+either option to check more observations or commands. It does not load VLA weights,
+open cameras, connect motors, or measure physical command compliance. A successful
+`processor_validation.json` is separate from permission to operate the robot.
+
 ## Use Qwen through the language runtime
 
 Add these options to your existing, calibrated `lerobot-rollout` command, keeping
