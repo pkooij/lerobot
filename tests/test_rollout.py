@@ -343,6 +343,37 @@ def test_build_rollout_context_uses_resolved_device(
             robot.disconnect()
 
 
+@pytest.mark.parametrize("observation_error", [RuntimeError("missing feedback"), KeyboardInterrupt()])
+@pytest.mark.parametrize("disconnect_fails", [False, True])
+def test_initial_observation_failure_disconnects_robot(monkeypatch, observation_error, disconnect_fails):
+    import lerobot.rollout.context as rollout_context
+    from lerobot.policies.act.configuration_act import ACTConfig
+    from lerobot.rollout import RolloutConfig
+    from tests.mocks.mock_robot import MockRobot, MockRobotConfig
+
+    robot_config = MockRobotConfig(random_values=False, static_values=[0.0, 0.0, 0.0])
+    robot = MockRobot(robot_config)
+    cfg = RolloutConfig(
+        robot=robot_config,
+        policy=ACTConfig(device="cpu", pretrained_path=Path("unused-checkpoint")),
+        device="cpu",
+    )
+    monkeypatch.setattr(rollout_context, "_load_pretrained_policy", lambda _: torch.nn.Linear(3, 3))
+    monkeypatch.setattr(rollout_context, "make_robot_from_config", lambda _: robot)
+    monkeypatch.setattr(robot, "get_observation", MagicMock(side_effect=observation_error))
+    disconnect = MagicMock(wraps=robot.disconnect)
+    if disconnect_fails:
+        disconnect.side_effect = OSError("disconnect failed")
+    monkeypatch.setattr(robot, "disconnect", disconnect)
+
+    with pytest.raises(type(observation_error)) as caught:
+        rollout_context.build_rollout_context(cfg, threading.Event())
+    assert caught.value is observation_error
+    disconnect.assert_called_once_with()
+    if not disconnect_fails:
+        assert not robot.is_connected
+
+
 def test_load_pretrained_policy_passes_revision(monkeypatch):
     import lerobot.rollout.context as rollout_context
 

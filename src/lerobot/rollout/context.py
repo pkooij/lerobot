@@ -393,8 +393,17 @@ def build_rollout_context(
     logger.info("Robot connected: %s", robot.name)
 
     # Store the initial joint positions so we can return to a safe pose on shutdown.
-    initial_obs = robot.get_observation()
-    initial_position = {k: v for k, v in initial_obs.items() if k.endswith(".pos")}
+    try:
+        initial_obs = robot.get_observation()
+        initial_position = {k: v for k, v in initial_obs.items() if k.endswith(".pos")}
+    except BaseException:
+        # Context construction precedes the strategy's teardown guard. Do not leave
+        # an already connected robot enabled when its initial observation fails.
+        try:
+            robot.disconnect()
+        except Exception:
+            logger.exception("Robot disconnect failed after initial observation failure")
+        raise
     logger.info("Captured initial robot position (%d keys)", len(initial_position))
 
     robot_wrapper = ThreadSafeRobot(robot)
