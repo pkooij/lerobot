@@ -27,9 +27,16 @@ class PlannerConfig:
     model: str = "gpt-6-astra"
     api_base: str = "https://api.openai.com/v1"
     api_key_env: str = "OPENAI_API_KEY"
+    api_format: str = "responses"
+    max_output_tokens: int = 2048
+    reasoning_effort: str | None = None
+    # Some hosted Qwen routes require non-thinking mode for constrained JSON decoding.
+    enable_thinking: bool | None = None
     camera_keys: list[str] = field(default_factory=lambda: ["base", "left_wrist", "right_wrist"])
     # Observation views may exceed the views with trained coordinate commands.
     grounding_camera_keys: list[str] = field(default_factory=list)
+    # Set from the deployed checkpoint's command coverage, e.g. two pick/place targets.
+    target_point_count: int | None = None
     # Enable additional styles only after training and validating their annotations.
     styles: list[str] = field(default_factory=lambda: ["task", "subtask"])
     # Atomic motion wording supported by the deployed checkpoint, taken from its training manifest.
@@ -39,6 +46,16 @@ class PlannerConfig:
     log_path: str | None = None
 
     def __post_init__(self):
+        if self.api_format not in {"responses", "chat_completions"}:
+            raise ValueError("Planner api_format must be responses or chat_completions")
+        if isinstance(self.max_output_tokens, bool) or self.max_output_tokens <= 0:
+            raise ValueError("Planner max_output_tokens must be positive")
+        if self.enable_thinking is not None and self.api_format != "chat_completions":
+            raise ValueError("enable_thinking requires the chat_completions transport")
+        if self.target_point_count is not None and (
+            type(self.target_point_count) is not int or self.target_point_count < 1
+        ):
+            raise ValueError("target_point_count must be a positive integer")
         if self.history_turns < 0 or self.timeout_s <= 0 or not self.camera_keys:
             raise ValueError("Planner needs cameras, a positive timeout, and nonnegative history length")
         if not self.styles or set(self.styles) - {
@@ -116,6 +133,7 @@ class VisionLanguagePlanner:
             "goal": goal,
             "session": session,
             "model": self.config.model,
+            "api_format": self.config.api_format,
         }
         self._log("planner_request", audit)
         try:
@@ -181,7 +199,7 @@ class VisionLanguagePlanner:
         }
         payload = {
             "model": self.config.model,
-            "max_output_tokens": 2048,
+            "max_output_tokens": self.config.max_output_tokens,
             "store": False,
             "instructions": (
                 "You are the high-level planner for a language-steerable ReBot VLA. "
@@ -220,28 +238,18 @@ class VisionLanguagePlanner:
             "movements, including inside subtasks or combinations. An empty list means no atomic motion "
             "commands are supported. Semantic object manipulation goals and allowed visual targets remain available."
         )
-        key = self.config.require_api_key()
-        response = requests.post(
-            self.config.api_base.rstrip("/") + "/responses",
-            headers={"Authorization": f"Bearer {key}"},
-            json=payload,
-            timeout=self.config.timeout_s,
-        )
-        response.raise_for_status()
-        result = response.json()
-        if result.get("status") != "completed":
-            raise ValueError("Planner response did not complete")
-        text = "".join(
-            item["text"]
-            for output in result.get("output", [])
-            for item in output.get("content", [])
-            if item.get("type") == "output_text"
-        )
+        if self.config.target_point_count is not None:
+            payload["instructions"] += (
+                f" Target-point commands for this checkpoint require exactly {self.config.target_point_count} "
+                "ordered points. When using two points for pick-and-place, the first is the visible object "
+                "to pick and the second is the destination; express the pick-and-place instruction in that order."
+            )
+        text, response_id = self._request(payload)
         decision = json.loads(text)
         if decision.get("style") not in self.config.styles or not isinstance(decision.get("command"), str):
             raise ValueError("Invalid planner command/style")
         audit["planner_status"] = decision.get("status")
-        self._log("planner_proposal", {**decision, **audit, "response_id": result.get("id")})
+        self._log("planner_proposal", {**decision, **audit, "response_id": response_id})
         if decision.get("status") != "continue":
             raise ValueError(f"Planner stopped: {decision.get('status')}: {decision.get('assessment')}")
         if decision["style"] == "motion" and decision["command"] not in self.config.motion_commands:
@@ -258,6 +266,12 @@ class VisionLanguagePlanner:
                 raise ValueError("Coordinate commands require a visual style and an explicit point mode")
             if (style == "point" and mode != "targets") or (style == "trace" and mode != "path"):
                 raise ValueError("Point mode does not match the command style")
+            if (
+                mode == "targets"
+                and self.config.target_point_count is not None
+                and len(render["points"]) != self.config.target_point_count
+            ):
+                raise ValueError("Target point count is outside the checkpoint's trained command format")
             if mode == "path" and ("trace" not in self.config.styles or len(render["points"]) < 2):
                 raise ValueError(
                     "Gripper paths require explicitly enabled trace steering and at least two points"
@@ -274,3 +288,70 @@ class VisionLanguagePlanner:
         self._history.extend([user, {"role": "assistant", "content": text}])
         self._history = self._history[-2 * self.config.history_turns :] if self.config.history_turns else []
         return command
+
+    def _request(self, payload: dict) -> tuple[str, str | None]:
+        """Adapt transport only; both APIs share the grounding and command validation above."""
+        if self.config.api_format == "chat_completions":
+            messages = [{"role": "system", "content": payload["instructions"]}]
+            for message in payload["input"]:
+                content = message["content"]
+                if isinstance(content, list):
+                    content = [
+                        {"type": "text", "text": part["text"]}
+                        if part["type"] == "input_text"
+                        else {"type": "image_url", "image_url": {"url": part["image_url"]}}
+                        for part in content
+                    ]
+                messages.append({"role": message["role"], "content": content})
+            specification = payload["text"]["format"]
+            payload = {
+                "model": payload["model"],
+                "messages": messages,
+                "max_tokens": payload["max_output_tokens"],
+                "stream": False,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {k: specification[k] for k in ("name", "strict", "schema")},
+                },
+            }
+            if self.config.reasoning_effort is not None:
+                payload["reasoning_effort"] = self.config.reasoning_effort
+            if self.config.enable_thinking is not None:
+                payload["chat_template_kwargs"] = {"enable_thinking": self.config.enable_thinking}
+            path = "/chat/completions"
+        else:
+            if self.config.reasoning_effort is not None:
+                payload["reasoning"] = {"effort": self.config.reasoning_effort}
+            path = "/responses"
+        key = self.config.require_api_key()
+        response = requests.post(
+            self.config.api_base.rstrip("/") + path,
+            headers={"Authorization": f"Bearer {key}"},
+            json=payload,
+            timeout=self.config.timeout_s,
+        )
+        response.raise_for_status()
+        result = response.json()
+        if self.config.api_format == "chat_completions":
+            choices = result.get("choices", [])
+            if len(choices) != 1 or choices[0].get("finish_reason") != "stop":
+                raise ValueError("Planner response did not complete")
+            message = choices[0].get("message", {})
+            text = message.get("content")
+            if (
+                message.get("refusal")
+                or message.get("tool_calls")
+                or not isinstance(text, str)
+                or not text.strip()
+            ):
+                raise ValueError("Planner did not return a text decision")
+        else:
+            if result.get("status") != "completed":
+                raise ValueError("Planner response did not complete")
+            text = "".join(
+                item["text"]
+                for output in result.get("output", [])
+                for item in output.get("content", [])
+                if item.get("type") == "output_text"
+            )
+        return text, result.get("id")

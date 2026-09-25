@@ -179,6 +179,121 @@ def test_planner_sends_named_images_and_bounded_history_without_action_tools(mon
         planner(obs, "goal", 2)
 
 
+def test_chat_planner_preserves_images_schema_history_and_grounding(monkeypatch, tmp_path):
+    decision = {
+        "command": "pick at the first point and place at the second",
+        "camera": "base",
+        "points": [[12, 20], [40, 10]],
+        "point_mode": "targets",
+        "style": "point",
+        "assessment": "object and bin visible",
+        "status": "continue",
+    }
+    post = Mock(
+        side_effect=lambda *a, **kw: Mock(
+            json=lambda: {
+                "id": "hf-response",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": json.dumps(decision), "reasoning_content": "not a command"},
+                    }
+                ],
+            }
+        )
+    )
+    monkeypatch.setenv("HF_TOKEN", "test-only-hf-secret")
+    monkeypatch.setattr("lerobot.rollout.planner.requests.post", post)
+    cfg = PlannerConfig(
+        api_format="chat_completions",
+        api_base="https://router.huggingface.co/v1",
+        api_key_env="HF_TOKEN",
+        model="Qwen/Qwen3.8-Flash-Next:featherless-ai",
+        reasoning_effort="low",
+        enable_thinking=False,
+        camera_keys=["base", "left_wrist"],
+        grounding_camera_keys=["base"],
+        target_point_count=2,
+        styles=["point"],
+        history_turns=1,
+        log_path=str(tmp_path / "planner.jsonl"),
+    )
+    cfg = draccus.decode(PlannerConfig, draccus.encode(cfg))
+    planner = VisionLanguagePlanner(cfg)
+    obs = {key: np.zeros((48, 64, 3), dtype=np.uint8) for key in cfg.camera_keys}
+    for _ in range(3):
+        assert planner(obs, "put object in bin", 1).endswith("[12, 20], [40, 10].")
+    bodies = [call.kwargs["json"] for call in post.call_args_list]
+    assert [len(body["messages"]) for body in bodies] == [2, 4, 4]
+    first = post.call_args_list[0]
+    assert first.args[0] == "https://router.huggingface.co/v1/chat/completions"
+    assert first.kwargs["headers"] == {"Authorization": "Bearer test-only-hf-secret"}
+    assert first.kwargs["timeout"] == cfg.timeout_s
+    body = bodies[0]
+    assert body["model"] == cfg.model and body["reasoning_effort"] == "low"
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert body["max_tokens"] == cfg.max_output_tokens and body["stream"] is False
+    assert "tools" not in body and "reasoning_content" not in json.dumps(bodies)
+    assert body["messages"][0]["role"] == "system"
+    parts = body["messages"][1]["content"]
+    assert "Camera base: 64x48" in parts[1]["text"]
+    assert "Camera left_wrist: 64x48" in parts[3]["text"]
+    assert all(parts[i]["image_url"]["url"].startswith("data:image/jpeg;base64,") for i in [2, 4])
+    schema = body["response_format"]["json_schema"]
+    assert schema["strict"] and schema["schema"]["properties"]["camera"]["enum"] == ["base", None]
+    assert "test-only-hf-secret" not in Path(cfg.log_path).read_text()
+    planner(obs, "put object in bin", 2)
+    assert len(post.call_args.kwargs["json"]["messages"]) == 2
+    decision["camera"] = "left_wrist"
+    with pytest.raises(ValueError, match="without trained coordinate grounding"):
+        planner(obs, "put object in bin", 2)
+    decision.update(camera="base", points=[[12, 20]])
+    with pytest.raises(ValueError, match="Target point count"):
+        planner(obs, "put object in bin", 2)
+
+
+@pytest.mark.parametrize(
+    "choice",
+    [
+        None,
+        {"finish_reason": "length", "message": {"content": "{}"}},
+        {"finish_reason": "content_filter", "message": {"content": "{}"}},
+        {"finish_reason": "stop", "message": {"content": None}},
+        {"finish_reason": "stop", "message": {"content": " \n"}},
+        {"finish_reason": "stop", "message": {"content": "{}", "refusal": "cannot comply"}},
+        {"finish_reason": "stop", "message": {"content": "{}", "tool_calls": [{"name": "move"}]}},
+    ],
+)
+def test_incomplete_or_nontext_chat_plans_hold_action_production(monkeypatch, choice):
+    monkeypatch.setenv("HF_TOKEN", "test-only")
+    monkeypatch.setattr(
+        "lerobot.rollout.planner.requests.post",
+        Mock(return_value=Mock(json=lambda: {"choices": [choice] if choice else []})),
+    )
+    planner = VisionLanguagePlanner(
+        PlannerConfig(api_format="chat_completions", api_key_env="HF_TOKEN", camera_keys=["base"])
+    )
+    engine = _FakeEngine()
+    engine.set_language_planner(planner)
+    engine.start_autosteer("pick object", 0)
+    engine.pump_query({"base": np.zeros((48, 64, 3), dtype=np.uint8)})
+    assert engine.planner_halted and engine.autosteer_goal is None
+    assert not planner._history
+    assert SyncInferenceEngine.get_action(engine, {"observation.state": object()}) is None
+
+
+def test_planner_rejects_unknown_transport_and_invalid_output_budget():
+    with pytest.raises(ValueError, match="api_format"):
+        PlannerConfig(api_format="unknown")
+    with pytest.raises(ValueError, match="max_output_tokens"):
+        PlannerConfig(max_output_tokens=0)
+    with pytest.raises(ValueError, match="enable_thinking"):
+        PlannerConfig(enable_thinking=False)
+    for count in [True, 0, -1, 1.5]:
+        with pytest.raises(ValueError, match="target_point_count"):
+            PlannerConfig(target_point_count=count)
+
+
 @pytest.mark.parametrize("coordinate_format", ["original_pixels", "native_points_v1"])
 def test_four_gpu_training_config_uses_main_parser(tmp_path, coordinate_format):
     module = runpy.run_path(str(Path(__file__).parents[1] / "examples/rebot_agent/train_wall_oss_flow.py"))

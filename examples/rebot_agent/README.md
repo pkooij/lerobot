@@ -174,6 +174,34 @@ Set `OPENAI_API_KEY` on the robot host. Use an API model ID available to that ac
 model access has not been tested here. Rollout rejects a missing or blank configured
 API key before loading policy weights or connecting hardware. This local check does
 not validate endpoint access or credentials; API failures still hold action production.
+
+For Hugging Face Inference Providers, use its Chat Completions endpoint and a token
+with Inference Providers permission in `HF_TOKEN`. For example:
+
+```bash
+--planner.api_format=chat_completions \
+--planner.api_base=https://router.huggingface.co/v1 \
+--planner.api_key_env=HF_TOKEN \
+--planner.model=Qwen/Qwen3.8-Flash-Next:featherless-ai \
+--planner.enable_thinking=false --planner.max_output_tokens=2048
+```
+
+Verify the chosen provider supports image inputs and the strict JSON response schema
+with saved observations before connecting hardware. Both transports use the same named
+images, bounded visual history, trained-command restrictions, coordinate renderer, and
+hold behavior. Truncated completions, refusals, and tool calls do not become commands.
+Reasoning fields are not used as commands or added to visual history. Provider
+availability and supported reasoning settings may change; there is no automatic model
+fallback. See the [HF Chat Completion API](https://huggingface.co/docs/inference-providers/tasks/chat-completion).
+
+The matched ReBot checkpoint learned two-point pick/place commands. When enabling
+its visual styles, also set `--planner.target_point_count=2`; the planner then rejects
+single-target commands and other target counts. `enable_thinking` is an optional
+Chat Completions setting, passed as `chat_template_kwargs.enable_thinking`. The
+Featherless route returned empty final answers with its default thinking mode and
+constrained JSON decoding during our saved-observation checks; disabling thinking
+produced a structured decision. Verify this setting for the chosen model/provider.
+
 Camera keys refer to processed robot
 observations. After `/start`, the external planner keeps the VLA idle until you enter:
 
