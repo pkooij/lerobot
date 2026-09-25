@@ -90,6 +90,44 @@ def test_get_observation_converts_to_degrees(follower):
         assert obs[f"{motor}.pos"] == pytest.approx(math.degrees(math.radians(idx)))
 
 
+@pytest.mark.parametrize("invalid_position", [None, float("nan"), float("inf"), -float("inf")])
+def test_missing_or_nonfinite_feedback_rejects_observation(follower, invalid_position):
+    motor = follower.motors["elbow_flex"]
+    if invalid_position is None:
+        motor.get_state.return_value = None
+    else:
+        motor.get_state.return_value.pos = invalid_position
+    with pytest.raises(RuntimeError, match="elbow_flex feedback"):
+        follower.get_observation()
+
+
+def test_failed_feedback_poll_does_not_return_cached_positions(follower):
+    follower.bus.poll_feedback_once.side_effect = OSError("CAN disconnected")
+    with pytest.raises(RuntimeError, match="CAN feedback poll failed"):
+        follower.get_observation()
+
+
+def test_relative_target_check_sends_nothing_without_feedback(follower):
+    follower.config.max_relative_target = 3.0
+    follower.motors["elbow_flex"].get_state.return_value = None
+    with pytest.raises(RuntimeError, match="elbow_flex feedback"):
+        follower.send_action({"shoulder_pan.pos": 10.0, "gripper.pos": -10.0})
+    for motor in follower.motors.values():
+        motor.send_mit.assert_not_called()
+        motor.send_pos_vel.assert_not_called()
+        motor.send_force_pos.assert_not_called()
+
+
+@pytest.mark.parametrize("invalid_target", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_action_rejected_before_any_motor_command(follower, invalid_target):
+    with pytest.raises(ValueError, match="nonfinite joint target"):
+        follower.send_action({"shoulder_pan.pos": 10.0, "gripper.pos": invalid_target})
+    for motor in follower.motors.values():
+        motor.send_mit.assert_not_called()
+        motor.send_pos_vel.assert_not_called()
+        motor.send_force_pos.assert_not_called()
+
+
 def test_send_action_clips_to_joint_limits(follower):
     # shoulder_pan limit is (-150, 150); request beyond the upper bound.
     returned = follower.send_action({"shoulder_pan.pos": 999.0})
@@ -131,3 +169,22 @@ def test_bimanual_prefixes_features():
     assert any(k.startswith("right_") for k in robot.action_features)
     assert "left_gripper.pos" in robot.action_features
     assert "right_gripper.pos" in robot.action_features
+
+
+@pytest.mark.parametrize("arm", ["left", "right"])
+def test_bimanual_invalid_target_rejected_before_either_arm_moves(arm):
+    with patch(f"{_MODULE}.require_package", lambda *a, **kw: None):
+        robot = BiRebotB601Follower(
+            BiRebotB601FollowerConfig(
+                left_arm_config=RebotB601FollowerConfig(port="/dev/null0"),
+                right_arm_config=RebotB601FollowerConfig(port="/dev/null1"),
+            )
+        )
+    robot.left_arm = MagicMock(is_connected=True)
+    robot.right_arm = MagicMock(is_connected=True)
+    action = {"left_shoulder_pan.pos": 10.0, "right_shoulder_pan.pos": 10.0}
+    action[f"{arm}_gripper.pos"] = float("nan")
+    with pytest.raises(ValueError, match="nonfinite joint target"):
+        robot.send_action(action)
+    robot.left_arm.send_action.assert_not_called()
+    robot.right_arm.send_action.assert_not_called()

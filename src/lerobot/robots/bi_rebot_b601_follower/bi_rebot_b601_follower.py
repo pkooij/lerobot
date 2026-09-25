@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import logging
+import math
 from functools import cached_property
 
 from lerobot.lerobot_types import RobotAction, RobotObservation
@@ -137,6 +138,8 @@ class BiRebotB601Follower(BimanualMixin, Robot):
 
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
+        if any(not math.isfinite(value) for key, value in action.items() if key.endswith(".pos")):
+            raise ValueError("ReBot action contains a nonfinite joint target")
         left_action = {
             key.removeprefix("left_"): value for key, value in action.items() if key.startswith("left_")
         }

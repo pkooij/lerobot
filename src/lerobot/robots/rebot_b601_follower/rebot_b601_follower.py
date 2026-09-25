@@ -215,13 +215,17 @@ class RebotB601Follower(Robot):
             motor.request_feedback()
         try:
             self.bus.poll_feedback_once()
-        except Exception:
-            logger.warning("CAN bus poll feedback failed.")
+        except Exception as exc:
+            raise RuntimeError("Cannot read ReBot joint positions: CAN feedback poll failed") from exc
 
         present_pos = {}
         for motor_name, motor in self.motors.items():
             state = motor.get_state()
-            present_pos[motor_name] = math.degrees(state.pos) if state is not None else 0.0
+            if state is None or not math.isfinite(state.pos):
+                raise RuntimeError(
+                    f"Cannot read ReBot joint position: missing or invalid {motor_name} feedback"
+                )
+            present_pos[motor_name] = math.degrees(state.pos)
         return present_pos
 
     @check_if_not_connected
@@ -255,6 +259,11 @@ class RebotB601Follower(Robot):
         always returned.
         """
         goal_pos = {key.removesuffix(".pos"): val for key, val in action.items() if key.endswith(".pos")}
+
+        # Reject the entire action before clipping or sending any motor command.
+        # Python min/max can turn NaN into a finite joint limit, hiding invalid policy output.
+        if any(not math.isfinite(value) for value in goal_pos.values()):
+            raise ValueError("ReBot action contains a nonfinite joint target")
 
         # Clip against soft joint limits.
         for motor_name in list(goal_pos):
