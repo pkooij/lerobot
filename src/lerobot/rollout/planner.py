@@ -184,14 +184,20 @@ class VisionLanguagePlanner:
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                # Choose the style before coordinates during constrained decoding.
+                "style": {
+                    "type": "string",
+                    "enum": self.config.styles,
+                    "description": "Use point/trace/combination for coordinates; task/subtask/motion have none.",
+                },
                 "command": {"type": "string"},
                 "camera": {"type": ["string", "null"], "enum": [*self.config.grounding_camera_keys, None]},
                 "points": {
                     "type": "array",
+                    "description": "Empty for task/subtask/motion. Ordered original-pixel targets for visual styles.",
                     "items": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
                 },
                 "point_mode": {"type": ["string", "null"], "enum": ["targets", "path", None]},
-                "style": {"type": "string", "enum": self.config.styles},
                 "assessment": {"type": "string"},
                 "status": {"type": "string", "enum": ["continue", "complete", "uncertain"]},
             },
@@ -216,6 +222,8 @@ class VisionLanguagePlanner:
                 "use wording that identifies each point's role in order. Set point_mode=path for gripper trajectories. "
                 "Point style uses targets; trace style uses path; combination may use either if allowed. "
                 "For other commands use camera=null, points=[], and point_mode=null. "
+                "Choose style before filling the other fields. Any nonempty points array requires "
+                "style=point, trace, or combination. Never attach coordinates to task, subtask, or motion. "
                 "Do not infer grasp success from closure alone or treat a previous command as executed evidence. "
                 "Adapt the command abstraction when progress stalls. Give a brief observable assessment. "
                 "If complete or unable to choose a grounded command, set status accordingly; this stops planning and motion. "

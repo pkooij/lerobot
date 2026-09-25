@@ -294,6 +294,39 @@ def test_planner_rejects_unknown_transport_and_invalid_output_budget():
             PlannerConfig(target_point_count=count)
 
 
+@pytest.mark.parametrize("api_format", ["responses", "chat_completions"])
+def test_semantic_planner_commands_cannot_include_coordinates(monkeypatch, api_format):
+    decision = {
+        "style": "task",
+        "command": "pick the block and put it in the bin",
+        "camera": "base",
+        "points": [[10, 20], [30, 10]],
+        "point_mode": "targets",
+        "assessment": "block and bin visible",
+        "status": "continue",
+    }
+    text = json.dumps(decision)
+    result = (
+        {"choices": [{"finish_reason": "stop", "message": {"content": text}}]}
+        if api_format == "chat_completions"
+        else {"status": "completed", "output": [{"content": [{"type": "output_text", "text": text}]}]}
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setattr("lerobot.rollout.planner.requests.post", Mock(return_value=Mock(json=lambda: result)))
+    planner = VisionLanguagePlanner(
+        PlannerConfig(
+            api_format=api_format,
+            camera_keys=["base"],
+            grounding_camera_keys=["base"],
+            styles=["task", "point"],
+            target_point_count=2,
+        )
+    )
+    with pytest.raises(ValueError, match="Coordinate commands require a visual style"):
+        planner({"base": np.zeros((48, 64, 3), dtype=np.uint8)}, "goal", 0)
+    assert not planner._history
+
+
 @pytest.mark.parametrize("coordinate_format", ["original_pixels", "native_points_v1"])
 def test_four_gpu_training_config_uses_main_parser(tmp_path, coordinate_format):
     module = runpy.run_path(str(Path(__file__).parents[1] / "examples/rebot_agent/train_wall_oss_flow.py"))
