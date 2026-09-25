@@ -16,7 +16,7 @@ from lerobot.datasets.recipe import TrainingRecipe
 from lerobot.policies.wall_x.configuration_wall_x import WallXConfig  # noqa: F401
 from lerobot.rollout.inference.sync import SyncInferenceEngine
 from lerobot.rollout.planner import PlannerConfig, VisionLanguagePlanner
-from tests.test_interactive_rollout import _FakeEngine
+from tests.test_interactive_rollout import _FakeEngine, _make_ctx, _serve_thread
 
 
 @pytest.mark.parametrize("credential", [None, "", " \t\n"])
@@ -660,3 +660,63 @@ def test_planner_deadline_discards_late_response_and_bounds_inflight_requests(mo
     assert post.call_count == 2
     assert len(planner._history) == 2
     assert planner._history[0]["content"][0]["text"] == "Overall task: new goal"
+
+
+@pytest.mark.parametrize("stop_source", ["controller", "shutdown"])
+def test_stop_exits_control_thread_while_planner_transport_is_stalled(monkeypatch, tmp_path, stop_source):
+    from lerobot.rollout import RolloutController
+
+    started, release = threading.Event(), threading.Event()
+    response = Mock(json=lambda: {"status": "completed", "output": []})
+
+    def stalled_post(*args, **kwargs):
+        started.set()
+        release.wait()
+        return response
+
+    post = Mock(side_effect=stalled_post)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setattr("lerobot.rollout.planner.requests.post", post)
+    observation = {"base": np.zeros((48, 64, 3), dtype=np.uint8)}
+
+    def run(ctx):
+        ctx.policy.inference.start_autosteer("pick the blue block", 2)
+        ctx.policy.inference.pump_query(observation)
+
+    ctx, strategy, engine, parent, _ = _make_ctx(run)
+    log = tmp_path / "planner.jsonl"
+    planner = VisionLanguagePlanner(
+        PlannerConfig(camera_keys=["base"], timeout_s=30, log_path=str(log)),
+        stop_event=ctx.runtime.shutdown_event,
+    )
+    engine.set_language_planner(planner)
+    initial_task = engine.task
+    controller = RolloutController(strategy, ctx)
+    thread = _serve_thread(controller)
+    try:
+        controller.start()
+        assert started.wait(timeout=2)
+        controller.stop() if stop_source == "controller" else parent.set()
+        thread.join(timeout=2)
+        assert not thread.is_alive()  # Must not wait for the 30-second API deadline.
+        assert not release.is_set()
+        assert not planner._pending_request.done()
+        assert engine.task == initial_task
+        assert engine.planner_halted
+        assert planner._history == []
+        # A stopped rollout must not even launch another transport request.
+        engine.start_autosteer("new goal", 2)
+        engine.pump_query(observation)
+        assert post.call_count == 1
+    finally:
+        controller.stop()
+        release.set()
+        thread.join(timeout=2)
+        if planner._pending_request is not None:
+            planner._pending_request.result(timeout=2)
+    assert planner._history == []
+    assert engine.task == initial_task
+    events = [json.loads(line) for line in log.read_text().splitlines()]
+    assert any(event.get("error_type") == "CancelledError" for event in events)
+    assert not any(event["event"] == "planner_returned" for event in events)
+    response.close.assert_called_once()

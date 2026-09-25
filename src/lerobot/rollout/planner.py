@@ -11,7 +11,7 @@ import os
 import threading
 import time
 import uuid
-from concurrent.futures import Future
+from concurrent.futures import CancelledError, Future
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -126,8 +126,9 @@ def image_content(frame, camera: str) -> list[dict]:
 class VisionLanguagePlanner:
     """Return a language command conditioned on current images and a bounded visual history."""
 
-    def __init__(self, config: PlannerConfig):
+    def __init__(self, config: PlannerConfig, stop_event: threading.Event | None = None):
         self.config = config
+        self._stop_event = stop_event
         self._history: list[dict] = []
         self._session: tuple[str, int] | None = None
         self._request_lock = threading.Lock()
@@ -333,6 +334,7 @@ class VisionLanguagePlanner:
         elif decision.get("camera") is not None or decision.get("point_mode") is not None:
             raise ValueError("Commands without points must have null camera and point mode")
         command = render_steering_command(render)
+        self._check_stopped()
         self._history.extend([user, {"role": "assistant", "content": text}])
         self._history = self._history[-2 * self.config.history_turns :] if self.config.history_turns else []
         return command
@@ -399,6 +401,10 @@ class VisionLanguagePlanner:
             )
         return text, result.get("id")
 
+    def _check_stopped(self) -> None:
+        if self._stop_event is not None and self._stop_event.is_set():
+            raise CancelledError("Rollout stopped; late planner responses are discarded")
+
     def _request_json(self, url: str, headers: dict, payload: dict) -> dict:
         """Bound network/JSON waiting; a late worker cannot issue a command or update history.
 
@@ -406,7 +412,9 @@ class VisionLanguagePlanner:
         one transport worker per planner, including after a deadline, so a stalled server
         cannot accumulate background requests on repeated operator retries.
         """
+        self._check_stopped()
         timeout = self.config.timeout_s
+        deadline = time.perf_counter() + timeout
         with self._request_lock:
             if self._pending_request is not None and not self._pending_request.done():
                 raise RuntimeError(
@@ -430,7 +438,16 @@ class VisionLanguagePlanner:
 
             # A timed-out network read must not delay robot shutdown or Python exit.
             threading.Thread(target=request, name="lerobot-planner-transport", daemon=True).start()
-        try:
-            return future.result(timeout=timeout)
-        except TimeoutError as exc:
-            raise TimeoutError("Planner request timed out; late responses are discarded") from exc
+        while True:
+            self._check_stopped()
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                raise TimeoutError("Planner request timed out; late responses are discarded")
+            try:
+                result = future.result(timeout=min(0.05, remaining))
+            except TimeoutError:
+                if future.done():
+                    raise  # Transport itself failed; do not retry a completed future.
+                continue
+            self._check_stopped()
+            return result

@@ -613,7 +613,7 @@ def build_rollout_context(
     if cfg.planner.enabled:
         from .planner import VisionLanguagePlanner
 
-        inference_strategy.set_language_planner(VisionLanguagePlanner(cfg.planner))
+        inference_strategy.set_language_planner(VisionLanguagePlanner(cfg.planner, stop_event=shutdown_event))
 
     # --- 8. Assemble ---------------------------------------------------
     logger.info("Rollout context assembled successfully")
