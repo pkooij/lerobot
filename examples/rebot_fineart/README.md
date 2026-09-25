@@ -46,6 +46,14 @@ tests causal inference with self-generated subtasks and no future targets in
 the policy input. Neither diagnostic measures physical success. Consult
 `status.json` before scheduling: cancelled validation jobs may require clarification.
 
+The causal checker accepts `--step 1000 --variants subtask` (or `task_only`)
+to inspect an earlier saved checkpoint independently. Without these options it
+checks both final checkpoints as before. Explicit selections write separate report
+files; predictions already include the variant and update in their filenames.
+Every sample resets policy state and seeds generation and action sampling, so
+the same observations can be compared across checkpoints. These options have
+been syntax checked; actual checkpoint inference remains pending GPU validation.
+
 The task-only run developed large pre-clipping gradients and logged infinite
 norms around steps 3,600–3,700, despite finite scalar losses. `audit_gradients.py`
 probes checkpoints 1,000 and 3,000 with fixed batches of 16 frames from three

@@ -34,17 +34,27 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--job", default="86031")
     parser.add_argument("--phase", choices=["smoke", "full"], default="full")
+    parser.add_argument("--step", type=int, help="Saved update to evaluate; defaults to 20/10000 by phase")
+    parser.add_argument(
+        "--variants", nargs="+", choices=["subtask", "task_only"], default=["subtask", "task_only"]
+    )
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     parser.add_argument("--load-only", action="store_true")
     args = parser.parse_args()
+    if args.step is not None and args.step <= 0:
+        parser.error("--step must be positive")
     assert args.device == "cuda" or args.load_only, "CPU gate checks reload only"
     split = json.loads((ROOT / "split.json").read_text())
     goals = json.loads((ROOT / "episode_goals.json").read_text())
     stats = json.loads((ROOT / "dataset_repaired/meta/stats.json").read_text())
     action_std = np.maximum(np.asarray(stats["action"]["std"]), 1e-6)
-    steps = 20 if args.phase == "smoke" else 10000
+    steps = args.step if args.step is not None else (20 if args.phase == "smoke" else 10000)
+    selection = (
+        f"_{steps}_{'-'.join(args.variants)}" if args.step is not None or len(args.variants) != 2 else ""
+    )
+    destination = ROOT / f"reload_{args.phase}_{args.device}_{args.job}{selection}.json"
     reports = {}
-    for variant in ("subtask", "task_only"):
+    for variant in args.variants:
         checkpoint = ROOT / f"runs/{variant}_{args.phase}_{args.job}/checkpoints/{steps:06d}/pretrained_model"
         state = json.loads((checkpoint.parent / "training_state/training_step.json").read_text())
         assert state["step"] == steps and state["batch_size"] == 16
@@ -87,6 +97,10 @@ def main():
                 goal = goals[str(ep)]
                 instruction = goal
                 row = {"episode": ep, "frame": int(item["frame_index"]), "goal": goal}
+                seed = 1000 + ep * 100000 + int(item["frame_index"])
+                torch.manual_seed(seed)
+                policy.reset()
+                row["seed"] = seed
                 if variant == "subtask":
                     query = pre({**obs, QUERY_KIND: "next_subtask", QUERY_TEXT: goal})
                     assert "action" not in query and "language_persistent" not in query
@@ -102,7 +116,7 @@ def main():
                 batch = pre({**obs, "task": instruction})
                 assert "action" not in batch and "language_persistent" not in batch
                 if not args.load_only:
-                    torch.manual_seed(1000 + ep * 100 + index)
+                    torch.manual_seed(seed)
                     policy.reset()
                     synchronize(args.device)
                     start = time.perf_counter()
@@ -154,9 +168,8 @@ def main():
         "test_episodes_unused": split["test"],
         "limitation": "Offline replay and reload checks; no physical success measurement.",
     }
-    destination = ROOT / f"reload_{args.phase}_{args.device}_{args.job}.json"
-    destination.write_text(json.dumps(result, indent=2) + "\n")
-    print("BOTH CHECKPOINT RELOAD CHECKS PASSED", str(destination), flush=True)
+    destination.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
+    print("SELECTED CHECKPOINT RELOAD CHECKS PASSED", str(destination), flush=True)
 
 
 if __name__ == "__main__":
