@@ -30,6 +30,21 @@ Dataset `pepijn223/rebot_diverse_picking_100_annotated`, pinned revision
 85 training episodes are used. Development episodes: 6, 7, 50, 72, 78.
 Test episodes: 90–99. The split is identical for both variants. Development
 loss uses up to 256 samples every 1,000 steps; physical success remains untested.
+An audit found that the native trainer selects the first frames per canonical
+`task_index`. Since this dataset has one canonical task index, the logged loss
+covers only the first 256 frames (0–8.5 seconds) of episode 6. It is not a
+representative metric across all five development episodes.
+
+`eval_components.py` is a separate, post-training diagnostic for checkpoints
+1,000, 5,000, and 10,000. It samples 50 fixed bin midpoints through each dev
+episode, repeats the same random seed per frame, and reports flow, text, and
+FAST losses separately, including per-episode results and branch counts.
+Component means are conditional on the active objective and averaged per frame;
+they are not directly comparable to the native batched composite scalar.
+These are teacher-forced diagnostics using labels. `reload_check.py` separately
+tests causal inference with self-generated subtasks and no future targets in
+the policy input. Neither diagnostic measures physical success. Consult
+`status.json` before scheduling: cancelled validation jobs may require clarification.
 
 The experiment copies metadata and computes state/action normalization from
 117,379 training frames only. Original data, videos, and checkpoint weights
