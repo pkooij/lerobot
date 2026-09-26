@@ -10,11 +10,40 @@ import math
 from pathlib import Path
 
 
+def latest_hardware_config(root):
+    """Find an existing manual-trial robot config; never invent hardware settings."""
+    candidates = []
+    for directory in root.glob("manual_*"):
+        if not directory.is_dir():
+            continue
+        for path in directory.rglob("*.json"):
+            try:
+                source = json.loads(path.read_text())
+            except (OSError, UnicodeError, ValueError):
+                continue
+            if not isinstance(source, dict):
+                continue
+            robot = source.get("robot", source)
+            if not isinstance(robot, dict) or robot.get("type") != "bi_rebot_b601_follower":
+                continue
+            if all(
+                isinstance(robot.get(arm), dict) and robot[arm].get("port")
+                for arm in ("left_arm_config", "right_arm_config")
+            ):
+                candidates.append(path)
+    if not candidates:
+        raise ValueError(
+            f"No saved manual ReBot config found under {root}; supply --hardware-config explicitly"
+        )
+    return max(candidates, key=lambda path: (path.stat().st_mtime_ns, str(path)))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--hardware-config", type=Path, required=True, help="Existing rollout JSON or robot JSON"
     )
+    parser.add_argument("--hardware-root", type=Path, default=Path.home() / "rebot-steerable-artifacts")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-relative-target", type=float, default=5.0)
     parser.add_argument("--duration", type=float, default=120.0)
@@ -26,6 +55,11 @@ def main():
         parser.error("--max-relative-target must be finite and in (0, 5] degrees")
     if not math.isfinite(args.duration) or args.duration <= 0:
         parser.error("--duration must be finite and positive")
+    if args.hardware_config == Path("auto"):
+        try:
+            args.hardware_config = latest_hardware_config(args.hardware_root)
+        except ValueError as exc:
+            parser.error(str(exc))
     source = json.loads(args.hardware_config.read_text())
     robot = copy.deepcopy(source.get("robot", source))
     if robot.get("type") != "bi_rebot_b601_follower":

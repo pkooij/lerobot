@@ -98,21 +98,15 @@ Use an account with access to the private checkpoints and the PaliGemma tokenize
 (`google/paligemma-3b-pt-224`). Loading requires compatible CUDA/PyTorch on Madeleine;
 this new environment has not been installed or tested there.
 
-Set `HARDWARE_CONFIG` to the JSON used for your previous confirmed ReBot rollout
-(either the complete rollout config or its `robot` object). To locate candidates:
+Use `auto` to reuse the newest saved ReBot JSON under
+`$HOME/rebot-steerable-artifacts/manual_*`. The helper prints the selected path and
+validates its robot type, arm ports, and camera names. To select a particular
+previous rollout instead, replace `auto` with its JSON path. Madeleine was
+unreachable while these instructions were prepared.
 
 ```bash
-find "$HOME/rebot-steerable-artifacts" -type f -name '*.json' | sort
-```
-
-The hardware path is intentionally not guessed: Madeleine was unreachable while
-these instructions were prepared. Preserve its actual arm ports, camera paths,
-arm control parameters and left/right assignments.
-
-```bash
-HARDWARE_CONFIG=/absolute/path/to/your/previous/rollout.json
 uv run python examples/rebot_fineart/prepare_rollout.py \
-  --hardware-config "$HARDWARE_CONFIG" \
+  --hardware-config auto \
   --output "$HOME/rebot-fineart-rollout.json" \
   --max-relative-target 5 --duration 120
 ```
