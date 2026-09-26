@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from huggingface_hub import snapshot_download
 from motion_metrics import chunk_motion, replan_motion
 
 from lerobot.datasets.language_render import active_at
@@ -41,6 +42,7 @@ def main():
     )
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     parser.add_argument("--load-only", action="store_true")
+    parser.add_argument("--hub", action="store_true", help="Validate the pinned uploaded final checkpoints")
     parser.add_argument(
         "--replan-after", type=int, help="Also predict again this many frames after each anchor"
     )
@@ -55,22 +57,37 @@ def main():
     stats = json.loads((ROOT / "dataset_repaired/meta/stats.json").read_text())
     action_std = np.maximum(np.asarray(stats["action"]["std"]), 1e-6)
     steps = args.step if args.step is not None else (20 if args.phase == "smoke" else 10000)
+    if args.hub and (args.phase != "full" or steps != 10000):
+        parser.error("--hub selects only the uploaded full 10000-step checkpoints")
+    uploads = json.loads((ROOT / "uploaded_86031.json").read_text()) if args.hub else {}
     selection = (
         f"_{steps}_{'-'.join(args.variants)}" if args.step is not None or len(args.variants) != 2 else ""
     )
     if args.replan_after is not None:
         selection += f"_replan{args.replan_after}"
+    if args.hub:
+        selection += "_hub"
     destination = ROOT / f"reload_{args.phase}_{args.device}_{args.job}{selection}.json"
     reports = {}
     for variant in args.variants:
-        checkpoint = ROOT / f"runs/{variant}_{args.phase}_{args.job}/checkpoints/{steps:06d}/pretrained_model"
-        state = json.loads((checkpoint.parent / "training_state/training_step.json").read_text())
+        if args.hub:
+            checkpoint = Path(
+                snapshot_download(uploads[variant]["repo_id"], revision=uploads[variant]["revision"])
+            )
+            state = json.loads((checkpoint / "provenance.json").read_text())["training_state"]
+        else:
+            checkpoint = (
+                ROOT / f"runs/{variant}_{args.phase}_{args.job}/checkpoints/{steps:06d}/pretrained_model"
+            )
+            state = json.loads((checkpoint.parent / "training_state/training_step.json").read_text())
         assert state["step"] == steps and state["batch_size"] == 16
         assert state["dp_world_size"] == 4 and state["grad_accum_steps"] == 1
         digest = hashlib.sha256()
         with (checkpoint / "model.safetensors").open("rb") as stream:
             while block := stream.read(16 * 1024**2):
                 digest.update(block)
+        if args.hub:
+            assert digest.hexdigest() == uploads[variant]["weight_sha256"]
         cfg = PI052Config.from_pretrained(checkpoint)
         if args.replan_after is not None and args.replan_after >= cfg.chunk_size:
             parser.error("--replan-after must be smaller than the saved action chunk size")
@@ -184,6 +201,7 @@ def main():
             "reload_passed": True,
             "load_only": args.load_only,
             "samples": samples,
+            "hub_source": uploads.get(variant),
         }
         del policy, pre, post, batch
         if variant == "subtask":
