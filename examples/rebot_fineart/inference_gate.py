@@ -13,7 +13,6 @@ from lerobot.policies.pi052.configuration_pi052 import PI052Config
 from lerobot.policies.pi052.modeling_pi052 import PI052Policy
 from lerobot.processor.rename_processor import rename_stats
 from lerobot.scripts.lerobot_train import _preprocess_dataset_batch
-from lerobot.utils.collate import lerobot_collate_fn
 from lerobot.utils.constants import QUERY_KIND, QUERY_TEXT
 
 ROOT = Path(os.environ["REBOT_EXPERIMENT_ROOT"])
@@ -48,7 +47,7 @@ def main():
         instruction = "Reach toward the blue block."
         if variant == "subtask":
             query = _preprocess_dataset_batch(
-                lerobot_collate_fn([{**obs, QUERY_KIND: "next_subtask", QUERY_TEXT: goal}]),
+                {**obs, QUERY_KIND: "next_subtask", QUERY_TEXT: goal},
                 dataset.meta.camera_keys,
                 RENAME,
                 pre,
@@ -58,9 +57,7 @@ def main():
             assert isinstance(instruction, str) and instruction.strip()
         else:
             instruction = goal
-        batch = _preprocess_dataset_batch(
-            lerobot_collate_fn([{**obs, "task": instruction}]), dataset.meta.camera_keys, RENAME, pre
-        )
+        batch = _preprocess_dataset_batch({**obs, "task": instruction}, dataset.meta.camera_keys, RENAME, pre)
         assert policy.model.precompute_denoise_times is True
         policy.reset()
         with torch.inference_mode():
