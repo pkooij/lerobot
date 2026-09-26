@@ -2,14 +2,15 @@
 
 import json
 import math
+import os
 import re
 import sys
 from pathlib import Path
 
-ROOT = Path("/fsx/pepijn/rebot-fineart-20260925")
+ROOT = Path(os.environ.get("REBOT_EXPERIMENT_ROOT", "/fsx/pepijn/rebot-fineart-20260925"))
 job, phase, *requested = sys.argv[1:]
 variants = requested or ["subtask", "task_only"]
-steps = 20 if phase == "smoke" else 10000
+steps = 20 if phase == "smoke" else int(os.environ.get("REBOT_TRAIN_STEPS", "10000"))
 reports = {}
 for variant in variants:
     run = ROOT / f"runs/{variant}_{phase}_{job}"

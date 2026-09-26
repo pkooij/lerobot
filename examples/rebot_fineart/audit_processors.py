@@ -1,6 +1,7 @@
 """Exercise the actual dataset, recipe, tokenizer and split before training."""
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -15,7 +16,7 @@ from lerobot.processor.rename_processor import rename_stats
 from lerobot.scripts.lerobot_train import _preprocess_dataset_batch
 from lerobot.utils.collate import lerobot_collate_fn
 
-ROOT = Path("/fsx/pepijn/rebot-fineart-20260925")
+ROOT = Path(os.environ.get("REBOT_EXPERIMENT_ROOT", "/fsx/pepijn/rebot-fineart-20260925"))
 split = json.loads((ROOT / "split.json").read_text())
 rename = {
     "observation.images.base": "observation.images.cam_high",

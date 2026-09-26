@@ -61,6 +61,7 @@ from lerobot.common.wandb_utils import WandBLogger
 from lerobot.configs import JobConfig, parser
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets import EpisodeAwareSampler, compute_sampler_state
+from lerobot.datasets.eval_sampling import balanced_eval_indices
 from lerobot.datasets.factory import make_train_eval_datasets
 from lerobot.distributed import (
     ParallelDims,
@@ -371,12 +372,8 @@ def make_dataloaders(
         eval_ds = eval_dataset
         if cfg.max_eval_samples > 0 and hasattr(eval_dataset, "hf_dataset"):
             task_arr = eval_dataset.hf_dataset.data.column("task_index").to_numpy()
-            unique_tasks = sorted(set(task_arr.tolist()))
-            per_task = max(1, cfg.max_eval_samples // len(unique_tasks))
-            selected: list[int] = []
-            for t in unique_tasks:
-                frames = (task_arr == t).nonzero()[0][:per_task]
-                selected.extend(frames.tolist())
+            episode_arr = eval_dataset.hf_dataset.data.column("episode_index").to_numpy()
+            selected = balanced_eval_indices(task_arr, episode_arr, cfg.max_eval_samples)
             eval_ds = torch.utils.data.Subset(eval_dataset, selected)
 
         eval_collate_fn = lerobot_collate_fn if dataset.meta.has_language_columns else None
