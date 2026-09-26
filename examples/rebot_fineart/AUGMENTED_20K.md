@@ -59,3 +59,37 @@ smoke checks for both variants before either full run. Those smoke weights are
 discarded; full runs start fresh from midtraining. No robot operation or Hub
 upload is performed by these jobs. Set `REBOT_EXPERIMENT_ROOT` to the new root,
 with a pinned checkout at `$REBOT_EXPERIMENT_ROOT/lerobot` and a `logs` directory.
+
+## Paired old/new evaluation
+
+`compare_checkpoints.py` evaluates identical frames, explicit objective recipes,
+prompts, and per-frame noise seeds for every checkpoint. It reloads each saved
+processor, verifies identical normalization and joint ordering, disables language
+dropout, and reports flow, FAST, and subtask text losses separately. Different
+training mixtures are never compared through their weighted total loss.
+
+Development uses 100 frames per episode across episodes 6, 7, 50, 72 and 78:
+500 frames total. Sampling balances annotated stages and includes frames on both
+sides of subtask boundaries. Each frame tests the canonical goal and a held-out
+paraphrase template, plus annotated-subtask execution and goal-to-subtask text
+prediction for the subtask-capable models. Task-only models are compared on the
+shared goal-conditioned action cases. Goal-conditioned action evaluation is a
+transfer test for the old subtask model, which did not train that execution mode.
+
+The job compares both old 10k models with both new models at 5k/10k/15k/20k.
+Afterward, the predeclared final 20k models and old 10k models are evaluated on
+100 frames from each of the ten reserved test episodes: 1,000 frames total.
+Test losses do not select checkpoints or tune training. The split holds out
+trajectories, not necessarily every object identity or instruction type.
+
+Reports retain per-frame and per-episode metrics, paired loss differences,
+manifest hashes and weight hashes. Negative paired differences mean lower loss.
+These are teacher-forced diagnostics, not autonomous robot success rates.
+`--processor-only --smoke` audits real saved processors on CPU without loading
+model weights or computing losses. The GPU job first runs all final checkpoints
+and modes on a small development smoke panel before the full comparison.
+
+Run `comparison_job.sh` from a separate pinned checkout with an `afterok`
+dependency on the four-GPU training job and the CPU processor check. It uses one
+GPU after training has released its four GPUs. Never modify the running training
+checkout to add evaluation code. See the experiment's `status.json` for job IDs.
