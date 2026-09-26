@@ -139,12 +139,16 @@ def main():
     reports = {}
     normalization_hash = None
     action_names = None
+    flow_num_repeats = None
     for label, path in checkpoints.items():
         checkpoint = Path(path)
         with (checkpoint / "model.safetensors").open("rb") as stream:
             weight_sha = hashlib.file_digest(stream, "sha256").hexdigest()
         cfg = PI052Config.from_pretrained(checkpoint)
-        assert cfg.chunk_size == 50 and cfg.flow_num_repeats == 5
+        assert cfg.chunk_size == 50
+        if flow_num_repeats is None:
+            flow_num_repeats = cfg.flow_num_repeats
+        assert cfg.flow_num_repeats == flow_num_repeats, "Flow repeat counts differ"
         if action_names is None:
             action_names = cfg.action_feature_names
         assert cfg.action_feature_names == action_names, "Joint ordering differs"
@@ -236,6 +240,7 @@ def main():
             "manifest_sha256": digest,
             "normalization_sha256": normalization_hash,
             "training_recipe": cfg.recipe,
+            "flow_num_repeats": cfg.flow_num_repeats,
             "summary": summarize(rows),
             "per_episode": {
                 str(ep): summarize([r for r in rows if r["episode"] == ep])
