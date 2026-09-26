@@ -60,6 +60,18 @@ discarded; full runs start fresh from midtraining. No robot operation or Hub
 upload is performed by these jobs. Set `REBOT_EXPERIMENT_ROOT` to the new root,
 with a pinned checkout at `$REBOT_EXPERIMENT_ROOT/lerobot` and a `logs` directory.
 
+Before the smoke training runs, `inference_gate.py` now loads both prepared
+policies on GPU and exercises their actual `select_action` and chunk-prediction
+paths, including generated language for the subtask model. It requires finite
+14-joint outputs and bitwise agreement between legacy and precomputed timestep
+schedules for fixed noise. This follows the earlier `embed_prefix` signature fix
+(`states` / `state_masks`) and restoration of the previously unused
+`precompute_denoise_times` switch in the shared Euler integrator. The schedule is
+allocated on the device once per chunk, rather than once per denoising step.
+These gates establish compatibility and numerical agreement, not a measured
+end-to-end speedup. The first launch was stopped during preliminary smoke checks
+so that the full runs cannot begin before this inference gate passes.
+
 ## Paired old/new evaluation
 
 `compare_checkpoints.py` evaluates identical frames, explicit objective recipes,

@@ -122,11 +122,21 @@ def test_single_action_calls_do_not_generate_or_rewrite_runtime_subtask():
 
 @pytest.mark.parametrize("with_history", [False, True])
 @pytest.mark.parametrize("causal", [False, True])
-def test_shared_action_sampler_forwards_optional_state_prefix(with_history, causal):
+def test_shared_action_sampler_forwards_optional_state_prefix(with_history, causal, monkeypatch):
     """Exercise the real parent sampler and both prefix overrides, without model weights."""
     from torch import nn
 
+    from lerobot.policies.pi05 import modeling_pi05
     from lerobot.policies.pi052.modeling_pi052 import PI05Pytorch
+
+    integrate = modeling_pi05.euler_integrate
+    integration_options = {}
+
+    def checked_integrate(*args, **kwargs):
+        integration_options.update(kwargs)
+        return integrate(*args, **kwargs)
+
+    monkeypatch.setattr(modeling_pi05, "euler_integrate", checked_integrate)
 
     class Backbone(nn.Module):
         def __init__(self):
@@ -171,6 +181,7 @@ def test_shared_action_sampler_forwards_optional_state_prefix(with_history, caus
         lang_causal_marks=marks,
     )
     torch.testing.assert_close(actual, noise)
+    assert integration_options["precompute_times"] is True
     seen = core.paligemma_with_expert.seen
     prefix = seen["inputs_embeds"][0]
     assert prefix.shape == (1, 7 if with_history else 5, 4)

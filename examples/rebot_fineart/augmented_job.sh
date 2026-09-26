@@ -19,6 +19,8 @@ mapfile -t GPU_NAMES < <(nvidia-smi --query-gpu=name --format=csv,noheader)
 [[ ${#GPU_NAMES[@]} -eq 4 ]] || exit 1
 for GPU_NAME in "${GPU_NAMES[@]}"; do [[ "$GPU_NAME" == *H100* ]] || exit 1; done
 test -f "$ROOT/processor-audit.json"
+"$SOURCE/tools/bin/uv" run --no-project --python "$SOURCE/venv/bin/python" \
+  "$ROOT/lerobot/examples/rebot_fineart/inference_gate.py"
 for VARIANT in subtask task_only; do
   bash "$ROOT/lerobot/examples/rebot_fineart/train.sh" "$VARIANT" smoke 2>&1 | tee "$ROOT/logs/${VARIANT}_smoke_${SLURM_JOB_ID}.log"
 done
