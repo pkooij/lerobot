@@ -25,6 +25,7 @@ from lerobot.robots.rebot_b601_follower import (
     RebotB601FollowerConfig,
     RebotB601FollowerRobotConfig,
 )
+from lerobot.robots.rebot_b601_follower.target_rate_limiter import JointTargetRateLimiter
 
 _MODULE = "lerobot.robots.rebot_b601_follower.rebot_b601_follower"
 
@@ -131,3 +132,55 @@ def test_bimanual_prefixes_features():
     assert any(k.startswith("right_") for k in robot.action_features)
     assert "left_gripper.pos" in robot.action_features
     assert "right_gripper.pos" in robot.action_features
+
+
+def test_bimanual_forwards_independent_target_rate_settings():
+    with patch(f"{_MODULE}.require_package", lambda *a, **kw: None):
+        cfg = BiRebotB601FollowerConfig(
+            left_arm_config=RebotB601FollowerConfig(
+                port="/dev/null0",
+                max_relative_target=5.0,
+                max_target_velocity_deg_s=30.0,
+                max_target_step_deg=1.0,
+            ),
+            right_arm_config=RebotB601FollowerConfig(
+                port="/dev/null1",
+                max_relative_target=5.0,
+                max_target_velocity_deg_s=60.0,
+                max_target_step_deg=2.0,
+            ),
+        )
+        robot = BiRebotB601Follower(cfg)
+    assert robot.left_arm._target_limiter.velocity_deg_s == 30
+    assert robot.right_arm._target_limiter.velocity_deg_s == 60
+    assert robot.left_arm._target_limiter.step_deg == 1
+    assert robot.right_arm._target_limiter.step_deg == 2
+
+
+def test_driver_advances_reference_without_changing_units_or_gains(follower):
+    follower._target_limiter = JointTargetRateLimiter(30, 1)
+    follower.config.max_relative_target = 5.0
+    with patch(
+        "lerobot.robots.rebot_b601_follower.rebot_b601_follower.time.monotonic",
+        side_effect=[0, 1 / 30, 2 / 30],
+    ):
+        sent = [follower.send_action({"shoulder_pan.pos": 100.0}) for _ in range(3)]
+    assert [s["shoulder_pan.pos"] for s in sent] == pytest.approx([1, 2, 3])
+    follower.motors["shoulder_pan"].send_mit.assert_called_with(math.radians(3), 0.0, 45.0, 12.0, 0.0)
+
+
+def test_driver_missing_feedback_and_failed_send_cannot_resume_silently(follower):
+    follower._target_limiter = JointTargetRateLimiter(30, 1)
+    follower.config.max_relative_target = 5.0
+    motor = follower.motors["shoulder_pan"]
+    state = motor.get_state.return_value
+    motor.get_state.return_value = None
+    with pytest.raises(ValueError, match="Missing"):
+        follower.send_action({"shoulder_pan.pos": 100.0})
+    motor.send_mit.assert_not_called()
+    motor.get_state.return_value = state
+    motor.send_mit.side_effect = OSError("send failed")
+    with pytest.raises(OSError):
+        follower.send_action({"shoulder_pan.pos": 100.0})
+    with pytest.raises(RuntimeError, match="reconnect"):
+        follower.send_action({"shoulder_pan.pos": 100.0})

@@ -46,6 +46,11 @@ def main():
     parser.add_argument("--hardware-root", type=Path, default=Path.home() / "rebot-steerable-artifacts")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-relative-target", type=float, default=5.0)
+    parser.add_argument(
+        "--max-target-velocity",
+        type=float,
+        help="Optional target slew rate in deg/s (up to 60); also caps each send to rate/30 degrees",
+    )
     parser.add_argument("--duration", type=float, default=120.0)
     parser.add_argument(
         "--record", action="store_true", help="Save cameras/state/actions and a command trace locally"
@@ -58,6 +63,10 @@ def main():
         parser.error("--max-relative-target must be finite and in (0, 5] degrees")
     if not math.isfinite(args.duration) or args.duration <= 0:
         parser.error("--duration must be finite and positive")
+    if args.max_target_velocity is not None and (
+        not math.isfinite(args.max_target_velocity) or not 0 < args.max_target_velocity <= 60
+    ):
+        parser.error("--max-target-velocity must be finite and in (0, 60] degrees/second")
     if args.hardware_config == Path("auto"):
         try:
             args.hardware_config = latest_hardware_config(args.hardware_root)
@@ -71,6 +80,9 @@ def main():
         if not robot.get(arm, {}).get("port"):
             parser.error(f"Missing {arm}.port")
         robot[arm]["max_relative_target"] = args.max_relative_target
+        if args.max_target_velocity is not None:
+            robot[arm]["max_target_velocity_deg_s"] = args.max_target_velocity
+            robot[arm]["max_target_step_deg"] = args.max_target_velocity / 30
     camera_names = set(robot.get("cameras", {}))
     for side in ("left", "right"):
         camera_names.update(f"{side}_{name}" for name in robot[f"{side}_arm_config"].get("cameras", {}))

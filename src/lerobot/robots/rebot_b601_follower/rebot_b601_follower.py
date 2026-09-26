@@ -29,6 +29,7 @@ from lerobot.utils.import_utils import _motorbridge_available, require_package
 from ..robot import Robot
 from ..utils import ensure_safe_goal_position
 from .config_rebot_b601_follower import RebotB601FollowerRobotConfig
+from .target_rate_limiter import JointTargetRateLimiter
 
 if TYPE_CHECKING or _motorbridge_available:
     from motorbridge import Controller as MotorBridgeController, Mode as MotorBridgeMode
@@ -69,6 +70,16 @@ class RebotB601Follower(Robot):
         require_package("motorbridge", extra="rebot")
         super().__init__(config)
         self.config = config
+        self._target_limiter = None
+        self._target_send_failed = False
+        if config.max_target_velocity_deg_s is not None:
+            if config.max_relative_target is None:
+                raise ValueError(
+                    "Target rate limiting requires max_relative_target as a tracking-error bound"
+                )
+            self._target_limiter = JointTargetRateLimiter(
+                config.max_target_velocity_deg_s, config.max_target_step_deg
+            )
         self.bus: MotorBridgeController | None = None
         self.motors: dict = {}
         self.motor_names = list(config.motor_can_ids.keys())
@@ -103,6 +114,9 @@ class RebotB601Follower(Robot):
 
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
+        self._target_send_failed = False
+        if self._target_limiter is not None:
+            self._target_limiter.reset()
         logger.info(f"Connecting {self} on {self.config.port} (adapter={self.config.can_adapter})...")
         if self.config.can_adapter == "damiao":
             self.bus = MotorBridgeController.from_dm_serial(
@@ -209,18 +223,22 @@ class RebotB601Follower(Robot):
         self.bus.disable_all()
         logger.info(f"{self} torque disabled.")
 
-    def _present_pos(self) -> dict[str, float]:
+    def _present_pos(self, *, require_feedback: bool = False) -> dict[str, float]:
         """Read present joint positions in degrees."""
         for motor in self.motors.values():
             motor.request_feedback()
         try:
             self.bus.poll_feedback_once()
         except Exception:
+            if require_feedback:
+                raise
             logger.warning("CAN bus poll feedback failed.")
 
         present_pos = {}
         for motor_name, motor in self.motors.items():
             state = motor.get_state()
+            if require_feedback and (state is None or not math.isfinite(state.pos)):
+                raise ValueError(f"Missing or nonfinite motor feedback for {motor_name}")
             present_pos[motor_name] = math.degrees(state.pos) if state is not None else 0.0
         return present_pos
 
@@ -254,6 +272,8 @@ class RebotB601Follower(Robot):
         clipped depending on `max_relative_target`, so the action actually sent is
         always returned.
         """
+        if self._target_send_failed:
+            raise RuntimeError("A target send failed; reconnect before resuming rate-limited commands")
         goal_pos = {key.removesuffix(".pos"): val for key, val in action.items() if key.endswith(".pos")}
 
         # Clip against soft joint limits.
@@ -273,44 +293,72 @@ class RebotB601Follower(Robot):
             goal_pos["wrist_yaw"] = 0.0
 
         # Cap relative target when too far from the present position.
-        if self.config.max_relative_target is not None:
+        target_time = None
+        if self._target_limiter is not None:
+            present_pos = self._present_pos(require_feedback=True)
+            target_time = time.monotonic()
+            goal_pos = self._target_limiter.limit(
+                goal_pos, present_pos, self.config.joint_limits, self.config.max_relative_target, target_time
+            )
+        elif self.config.max_relative_target is not None:
             present_pos = self._present_pos()
             goal_present_pos = {key: (g, present_pos.get(key, g)) for key, g in goal_pos.items()}
             goal_pos = ensure_safe_goal_position(goal_present_pos, self.config.max_relative_target)
 
-        use_mit = self.config.control_mode == "mit"
-        for motor_name, position_deg in goal_pos.items():
-            motor = self.motors.get(motor_name)
-            if motor is None:
-                continue
-            idx = self.motor_names.index(motor_name)
-            pos_rad = math.radians(position_deg)
-            if motor_name == GRIPPER_MOTOR:
-                if self.config.gripper_control_mode == "mit":
-                    motor.send_mit(pos_rad, 0.0, self.config.gripper_mit_kp, self.config.gripper_mit_kd, 0.0)
+        try:
+            use_mit = self.config.control_mode == "mit"
+            for motor_name, position_deg in goal_pos.items():
+                motor = self.motors.get(motor_name)
+                if motor is None:
+                    continue
+                idx = self.motor_names.index(motor_name)
+                pos_rad = math.radians(position_deg)
+                if motor_name == GRIPPER_MOTOR:
+                    if self.config.gripper_control_mode == "mit":
+                        motor.send_mit(
+                            pos_rad, 0.0, self.config.gripper_mit_kp, self.config.gripper_mit_kd, 0.0
+                        )
+                    else:
+                        vel_deg_s = (
+                            self.config.pos_vel_velocity[idx]
+                            if isinstance(self.config.pos_vel_velocity, list)
+                            else self.config.pos_vel_velocity
+                        )
+                        motor.send_force_pos(
+                            pos_rad, math.radians(vel_deg_s), self.config.gripper_torque_ratio
+                        )
+                elif use_mit:
+                    kp = (
+                        self.config.mit_kp[idx]
+                        if isinstance(self.config.mit_kp, list)
+                        else self.config.mit_kp
+                    )
+                    kd = (
+                        self.config.mit_kd[idx]
+                        if isinstance(self.config.mit_kd, list)
+                        else self.config.mit_kd
+                    )
+                    motor.send_mit(pos_rad, 0.0, kp, kd, 0.0)
                 else:
                     vel_deg_s = (
                         self.config.pos_vel_velocity[idx]
                         if isinstance(self.config.pos_vel_velocity, list)
                         else self.config.pos_vel_velocity
                     )
-                    motor.send_force_pos(pos_rad, math.radians(vel_deg_s), self.config.gripper_torque_ratio)
-            elif use_mit:
-                kp = self.config.mit_kp[idx] if isinstance(self.config.mit_kp, list) else self.config.mit_kp
-                kd = self.config.mit_kd[idx] if isinstance(self.config.mit_kd, list) else self.config.mit_kd
-                motor.send_mit(pos_rad, 0.0, kp, kd, 0.0)
-            else:
-                vel_deg_s = (
-                    self.config.pos_vel_velocity[idx]
-                    if isinstance(self.config.pos_vel_velocity, list)
-                    else self.config.pos_vel_velocity
-                )
-                motor.send_pos_vel(pos_rad, math.radians(vel_deg_s))
+                    motor.send_pos_vel(pos_rad, math.radians(vel_deg_s))
+        except Exception:
+            if self._target_limiter is not None:
+                self._target_send_failed = True
+            raise
 
+        if self._target_limiter is not None:
+            self._target_limiter.commit(goal_pos, target_time)
         return {f"{motor}.pos": val for motor, val in goal_pos.items()}
 
     @check_if_not_connected
     def disconnect(self) -> None:
+        if self._target_limiter is not None:
+            self._target_limiter.reset()
         for motor in self.motors.values():
             if self.config.disable_torque_on_disconnect:
                 motor.disable()

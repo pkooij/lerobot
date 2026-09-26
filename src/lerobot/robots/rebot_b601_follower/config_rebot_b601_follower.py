@@ -48,6 +48,13 @@ class RebotB601FollowerConfig:
     # vector for safety purposes (in degrees). Set to a positive scalar to apply the
     # same value to all motors, or to a dict mapping motor names to per-motor values.
     max_relative_target: float | dict[str, float] | None = None
+    # Optional command-reference speed in degrees/s, measured from the last sent
+    # target, NOT from feedback. Requires max_relative_target as a separate
+    # tracking-error bound. This does not guarantee actual physical joint speed.
+    max_target_velocity_deg_s: float | None = None
+    # Prevent accumulated elapsed time after inference/pauses from causing a jump.
+    # At 30 Hz, 30 deg/s with a 1-degree step gives at most 1 degree per send.
+    max_target_step_deg: float = 1.0
 
     # cameras
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
