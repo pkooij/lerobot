@@ -118,3 +118,64 @@ def test_single_action_calls_do_not_generate_or_rewrite_runtime_subtask():
     assert policy.select_action(batch).shape == (1, 14)
     assert len(seen) == 1
     assert seen[0] is batch
+
+
+@pytest.mark.parametrize("with_history", [False, True])
+@pytest.mark.parametrize("causal", [False, True])
+def test_shared_action_sampler_forwards_optional_state_prefix(with_history, causal):
+    """Exercise the real parent sampler and both prefix overrides, without model weights."""
+    from torch import nn
+
+    from lerobot.policies.pi052.modeling_pi052 import PI05Pytorch
+
+    class Backbone(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.paligemma = SimpleNamespace(
+                model=SimpleNamespace(language_model=SimpleNamespace(config=SimpleNamespace()))
+            )
+            self.seen = None
+
+        def embed_image(self, image):
+            return torch.ones(image.shape[0], 2, 4)
+
+        def embed_language_tokens(self, tokens):
+            return tokens[..., None].float().expand(-1, -1, 4)
+
+        def forward(self, **kwargs):
+            self.seen = kwargs
+            return (None, None), None
+
+    core = PI05Pytorch.__new__(PI05Pytorch)
+    nn.Module.__init__(core)
+    core.config = SimpleNamespace(num_inference_steps=1, rtc_config=None)
+    core.rtc_processor = None
+    core.gradient_checkpointing_enabled = False
+    core.paligemma_with_expert = Backbone()
+    core.proprio_history_proj = nn.Linear(2, 4) if with_history else None
+    core.denoise_step = lambda **kwargs: torch.zeros_like(kwargs["x_t"])
+    states = torch.ones(1, 2, 2) if with_history else None
+    state_masks = torch.tensor([[True, False]]) if with_history else None
+    tokens = torch.tensor([[1, 2, 3]])
+    marks = torch.tensor([[False, True, True]]) if causal else None
+    noise = torch.ones(1, 2, 14)
+
+    actual = core.sample_actions(
+        [torch.zeros(1, 3, 2, 2)],
+        [torch.tensor([True])],
+        tokens,
+        torch.ones_like(tokens, dtype=torch.bool),
+        states=states,
+        state_masks=state_masks,
+        noise=noise,
+        lang_causal_marks=marks,
+    )
+    torch.testing.assert_close(actual, noise)
+    seen = core.paligemma_with_expert.seen
+    prefix = seen["inputs_embeds"][0]
+    assert prefix.shape == (1, 7 if with_history else 5, 4)
+    if with_history:
+        torch.testing.assert_close(prefix[:, 2:4], core.proprio_history_proj(states))
+        assert seen["attention_mask"][0, 0, -1, 3] < -1e10
+    assert bool(seen["attention_mask"][0, 0, 0, -1] < -1e10) == causal
+    assert core._lang_causal_marks is None

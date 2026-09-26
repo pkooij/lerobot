@@ -176,8 +176,10 @@ class PI05Pytorch(PI05PytorchBase):  # see openpi `PI0Pytorch`
         finally:
             self._lang_causal_marks = None
 
-    def embed_prefix(self, images, img_masks, tokens, masks):
-        prefix_embs, prefix_pad, prefix_att = super().embed_prefix(images, img_masks, tokens, masks)
+    def embed_prefix(self, images, img_masks, tokens, masks, states=None, state_masks=None):
+        prefix_embs, prefix_pad, prefix_att = super().embed_prefix(
+            images, img_masks, tokens, masks, states, state_masks
+        )
         marks = getattr(self, "_lang_causal_marks", None)
         if marks is not None:
             prefix_att = _apply_causal_language_marks(prefix_att, marks.to(prefix_att.device))
