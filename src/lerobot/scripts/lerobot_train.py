@@ -72,6 +72,7 @@ from lerobot.distributed import (
 from lerobot.envs import close_envs, make_env, make_env_pre_post_processors
 from lerobot.jobs import submit_to_hf
 from lerobot.optim.factory import make_optimizer_and_scheduler
+from lerobot.optim.grad_clip import clip_grad_norm_with_groups_
 from lerobot.policies import PreTrainedPolicy, make_policy, make_pre_post_processors
 from lerobot.policies.factory import ProcessorConfigKwargs
 from lerobot.processor.rename_processor import rename_batch_keys, rename_stats
@@ -176,6 +177,13 @@ def update_policy(
         step, and the dictionary of outputs from the policy's forward pass, for logging purposes.
     """
     start_time = time.perf_counter()
+    group_clipping = any(group.get("grad_clip_norm") is not None for group in optimizer.param_groups)
+    if group_clipping:
+        # Local norms are valid only for complete, DDP-synchronized parameters.
+        if accelerator.distributed_type.value not in {"NO", "MULTI_CPU", "MULTI_GPU"}:
+            raise ValueError("Group gradient clipping supports single-device/DDP training, not sharding")
+        if accelerator.scaler is not None:
+            raise ValueError("Group gradient clipping requires FP32/BF16 training without a GradScaler")
     policy.train()
 
     if torch.cuda.is_available():
@@ -224,7 +232,13 @@ def update_policy(
         # be meaningless. Always pass the full parameter list: accelerate's FSDP2 path requires
         # an exact match with the prepared model's parameters for a globally correct norm.
         grad_norm = None
-        if accelerator.sync_gradients and grad_clip_norm > 0:
+        if accelerator.sync_gradients and group_clipping:
+            accelerator.unscale_gradients(optimizer)
+            grad_norm, grad_metrics = clip_grad_norm_with_groups_(
+                policy.parameters(), optimizer.param_groups, 0.0 if grad_clip_norm < 0 else grad_clip_norm
+            )
+            output_dict = {**(output_dict or {}), **grad_metrics}
+        elif accelerator.sync_gradients and grad_clip_norm > 0:
             grad_norm = accelerator.clip_grad_norm_(policy.parameters(), grad_clip_norm)
 
         # Optimizer step (a no-op on non-final micro-batches under gradient accumulation)
