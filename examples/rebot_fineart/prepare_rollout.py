@@ -48,6 +48,9 @@ def main():
     parser.add_argument("--max-relative-target", type=float, default=5.0)
     parser.add_argument("--duration", type=float, default=120.0)
     parser.add_argument(
+        "--record", action="store_true", help="Save cameras/state/actions and a command trace locally"
+    )
+    parser.add_argument(
         "--task", default="Use the left arm to pick up the blue block and place it into the black bin."
     )
     args = parser.parse_args()
@@ -99,6 +102,21 @@ def main():
         "play_sounds": False,
         "return_to_initial_position": False,
     }
+    if args.record:
+        dataset_root = args.output.resolve().parent / "dataset"
+        trace_path = args.output.resolve().parent / "actions.jsonl"
+        if dataset_root.exists() or trace_path.exists():
+            parser.error("Recording needs a fresh directory: dataset or actions.jsonl already exists")
+        config["strategy"] = {"type": "sentry"}
+        config["dataset"] = {
+            "repo_id": "pepijn223/rollout_rebot_fineart_diagnostic",
+            "root": str(dataset_root),
+            "push_to_hub": False,
+            "private": True,
+            "streaming_encoding": True,
+            "fps": 30,
+        }
+        config["action_trace_path"] = str(trace_path)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x") as stream:
         json.dump(config, stream, indent=2)

@@ -29,6 +29,7 @@ from lerobot.utils.feature_utils import build_dataset_frame
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import log_visualization_data
 
+from ..action_trace import joint_values
 from ..inference import InferenceEngine
 
 if TYPE_CHECKING:
@@ -350,6 +351,10 @@ def send_next_action(
     ready (e.g. empty async queue, interpolator not yet primed).
     """
     engine = ctx.policy.inference
+    trace = getattr(ctx.runtime, "action_trace", None)
+    observation_event = None
+    if trace is not None:
+        observation_event = trace.write("observation", measured=joint_values(obs_raw))
     features = ctx.data.dataset_features
     ordered_keys = ctx.data.ordered_action_keys
     # ``nullcontext`` accepts (and ignores) the section name, so it stands in for
@@ -373,6 +378,28 @@ def send_next_action(
         raise ValueError(f"Interpolated tensor length ({len(interp)}) != action keys ({len(ordered_keys)})")
     action_dict = {k: interp[i].item() for i, k in enumerate(ordered_keys)}
     with section("send"):
+        requested = dict(action_dict) if trace is not None else None
         processed = ctx.processors.robot_action_processor((action_dict, obs_raw))
-        ctx.hardware.robot_wrapper.send_action(processed)
+        attempt = None
+        if trace is not None:
+            attempt = trace.write(
+                "send_attempt",
+                observation_sequence=observation_event,
+                task=engine.dispatched_task,
+                requested=requested,
+                processed=joint_values(processed),
+                emitted_policy_action=interpolator.emitted_policy_action,
+            )
+        try:
+            sent = ctx.hardware.robot_wrapper.send_action(processed)
+        except Exception as exc:
+            if trace is not None:
+                trace.write("send_error", attempt_sequence=attempt, error_type=type(exc).__name__)
+            raise
+        if trace is not None:
+            trace.write(
+                "send_result",
+                attempt_sequence=attempt,
+                sent=joint_values(sent) if isinstance(sent, dict) else None,
+            )
     return action_dict

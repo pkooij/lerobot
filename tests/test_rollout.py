@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import sys
 import threading
@@ -865,6 +866,70 @@ def _make_loop_ctx(fps: float, multiplier: int, num_ticks: int, on_tick=None):
 def _recorded_actions(dataset) -> list[float]:
     """Action values of the frames handed to ``dataset.add_frame``."""
     return [call.args[0]["action"][0] for call in dataset.add_frame.call_args_list]
+
+
+def test_action_trace_keeps_requested_processed_and_clipped_targets_separate(tmp_path):
+    from lerobot.rollout.action_trace import ActionTrace
+    from lerobot.rollout.strategies.core import send_next_action
+    from lerobot.utils.action_interpolator import ActionInterpolator
+
+    ctx, _ = _make_loop_ctx(30, 1, 1)
+    ctx.policy.inference.get_action.side_effect = lambda _: torch.tensor([20.0])
+    ctx.processors.robot_action_processor = lambda pair: {"m.pos": pair[0]["m.pos"] + 2}
+    ctx.hardware.robot_wrapper.send_action.return_value = {"m.pos": 4.0}
+    path = tmp_path / "actions.jsonl"
+    with ActionTrace(str(path)) as trace:
+        ctx.runtime.action_trace = trace
+        result = send_next_action({"m.pos": 3.0}, {"m.pos": 3.0}, ctx, ActionInterpolator(1))
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert result == {"m.pos": 20.0}  # Existing recording semantics are unchanged.
+    assert rows[0]["measured"] == {"m.pos": 3.0}
+    assert rows[1]["requested"] == {"m.pos": 20.0}
+    assert rows[1]["processed"] == {"m.pos": 22.0}
+    assert rows[2]["sent"] == {"m.pos": 4.0}
+    assert rows[1]["observation_sequence"] == rows[0]["sequence"]
+    assert rows[2]["attempt_sequence"] == rows[1]["sequence"]
+    assert rows[1]["task"] == "task"
+    assert rows[0]["monotonic_ns"] <= rows[1]["monotonic_ns"] <= rows[2]["monotonic_ns"]
+    with pytest.raises(FileExistsError), ActionTrace(str(path)):
+        pass
+
+
+def test_action_trace_does_not_report_failed_send_as_success(tmp_path):
+    from lerobot.rollout.action_trace import ActionTrace
+    from lerobot.rollout.strategies.core import send_next_action
+    from lerobot.utils.action_interpolator import ActionInterpolator
+
+    ctx, _ = _make_loop_ctx(30, 1, 1)
+    ctx.hardware.robot_wrapper.send_action.side_effect = OSError("motor transport failed")
+    path = tmp_path / "actions.jsonl"
+    with ActionTrace(str(path)) as trace:
+        ctx.runtime.action_trace = trace
+        with pytest.raises(OSError):
+            send_next_action({"m.pos": 3.0}, {"m.pos": 3.0}, ctx, ActionInterpolator(1))
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [row["event"] for row in rows] == ["observation", "send_attempt", "send_error"]
+    assert rows[-1]["error_type"] == "OSError"
+
+
+def test_sync_actions_stay_in_checkpoint_order_when_dataset_order_differs():
+    from lerobot.rollout import SyncInferenceEngine
+
+    policy = MagicMock()
+    policy.config.use_amp = False
+    policy.select_action.return_value = torch.tensor([[10.0, 20.0]])
+    engine = SyncInferenceEngine(
+        policy=policy,
+        preprocessor=lambda x: x,
+        postprocessor=lambda x: x,
+        device="cpu",
+        robot_type="test",
+        task="test",
+        dataset_features={"action": {"names": ["right.pos", "left.pos"]}},
+        ordered_action_keys=["left.pos", "right.pos"],
+    )
+    action = engine.get_action({"observation.state": torch.zeros(2).numpy()})
+    assert action.tolist() == [10.0, 20.0]
 
 
 def _make_sentry(ctx, multiplier: int):

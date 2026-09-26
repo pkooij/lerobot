@@ -299,6 +299,9 @@ class RolloutConfig:
     # Run time in seconds; 0 = infinite (24/7 mode).  In interactive mode this
     # bounds each /start segment, not the whole session.
     duration: float = 0.0
+    # Optional local JSONL of observations, requested targets and hardware-returned
+    # clipped targets. Diagnostic I/O adds overhead; the path must not exist.
+    action_trace_path: str | None = None
     # Control the rollout from stdin with chat-style commands (/start, /subtask,
     # /vqa, /autosteer, /reset, /stop) while hardware and policy stay warm.  The
     # robot does not move until /start, and logs below ERROR are muted for the

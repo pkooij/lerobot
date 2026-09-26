@@ -164,6 +164,7 @@ Usage examples
 """
 
 import logging
+from contextlib import ExitStack
 
 from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401
 from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401
@@ -193,6 +194,7 @@ from lerobot.rollout import (
     build_rollout_context,
     create_strategy,
 )
+from lerobot.rollout.action_trace import ActionTrace
 from lerobot.teleoperators import (  # noqa: F401
     Teleoperator,
     TeleoperatorConfig,
@@ -239,32 +241,36 @@ def rollout(cfg: RolloutConfig):
         # propagate through the parent event.
         shutdown_event = LinkedEvent(shutdown_event)
 
-    logger.info("Building rollout context...")
-    ctx = build_rollout_context(cfg, shutdown_event)
+    with ExitStack() as stack:
+        # Fail on an unusable/existing trace path before connecting any hardware.
+        trace = stack.enter_context(ActionTrace(cfg.action_trace_path)) if cfg.action_trace_path else None
+        logger.info("Building rollout context...")
+        ctx = build_rollout_context(cfg, shutdown_event)
+        ctx.runtime.action_trace = trace
 
-    strategy = create_strategy(cfg.strategy)
-    logger.info("Rollout strategy: %s", cfg.strategy.type)
-    logger.info(
-        "Robot: %s | FPS: %.0f | Duration: %s",
-        cfg.robot.type if cfg.robot else "?",
-        cfg.fps,
-        f"{cfg.duration}s" if cfg.duration > 0 else "infinite",
-    )
+        strategy = create_strategy(cfg.strategy)
+        logger.info("Rollout strategy: %s", cfg.strategy.type)
+        logger.info(
+            "Robot: %s | FPS: %.0f | Duration: %s",
+            cfg.robot.type if cfg.robot else "?",
+            cfg.fps,
+            f"{cfg.duration}s" if cfg.duration > 0 else "infinite",
+        )
 
-    try:
-        strategy.setup(ctx)
-        if cfg.interactive:
-            logger.info("Rollout setup complete — starting interactive session (robot idle until /start)")
-            InteractiveSession(strategy, ctx).run()
-        else:
-            logger.info("Rollout setup complete, starting rollout...")
-            strategy.run(ctx)
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user")
-    finally:
-        strategy.teardown(ctx)
-        if cfg.display_data:
-            shutdown_visualization(cfg.display_mode)
+        try:
+            strategy.setup(ctx)
+            if cfg.interactive:
+                logger.info("Rollout setup complete — starting interactive session (robot idle until /start)")
+                InteractiveSession(strategy, ctx).run()
+            else:
+                logger.info("Rollout setup complete, starting rollout...")
+                strategy.run(ctx)
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user")
+        finally:
+            strategy.teardown(ctx)
+            if cfg.display_data:
+                shutdown_visualization(cfg.display_mode)
 
     logger.info("Rollout finished")
 

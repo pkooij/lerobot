@@ -52,6 +52,7 @@ from lerobot.teleoperators import Teleoperator, make_teleoperator_from_config
 from lerobot.utils.feature_utils import combine_feature_dicts, hw_to_dataset_features
 from lerobot.utils.import_utils import _peft_available, require_package
 
+from .action_trace import ActionTrace
 from .configs import RolloutConfig
 from .inference import (
     InferenceEngine,
@@ -200,6 +201,7 @@ class RuntimeContext:
     # must forward it to the timer it builds in ``run()``, since a session mutes
     # everything below ERROR.
     cadence_report: Callable[[str], None] | None = None
+    action_trace: ActionTrace | None = None
 
 
 @dataclass
