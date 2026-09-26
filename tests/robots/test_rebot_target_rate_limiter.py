@@ -19,6 +19,22 @@ def test_reference_advances_while_measured_joint_is_stationary_then_stops_at_err
     assert sent == pytest.approx([0, 1, 2, 3, 4, 5, 5, 5, 5, 5])
 
 
+def test_optional_error_cap_can_be_disabled_without_disabling_rate_or_joint_limits():
+    limiter = JointTargetRateLimiter(60, 2)
+    sent = []
+    for tick in range(10):
+        now = tick / 30
+        result = limiter.limit({"joint": 100.0}, {"joint": 0.0}, {"joint": (-10, 12)}, None, now)
+        limiter.commit(result, now)
+        sent.append(result["joint"])
+    assert sent == pytest.approx([0, 2, 4, 6, 8, 10, 12, 12, 12, 12])
+    # A feedback jump no longer pulls the reference to a new measured-position envelope.
+    result = limiter.limit({"joint": -100.0}, {"joint": -20.0}, {"joint": (-10, 12)}, None, 10)
+    assert result["joint"] == pytest.approx(10)
+    with pytest.raises(ValueError, match="feedback"):
+        limiter.limit({"joint": 0.0}, {"joint": math.nan}, {}, None, 10)
+
+
 def test_elapsed_time_bounds_fast_ticks_and_pause_cannot_accumulate_a_large_jump():
     limiter = JointTargetRateLimiter(30, 1)
     assert command(limiter, 0) == 0

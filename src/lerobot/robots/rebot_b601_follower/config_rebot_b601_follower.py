@@ -49,7 +49,7 @@ class RebotB601FollowerConfig:
     # same value to all motors, or to a dict mapping motor names to per-motor values.
     max_relative_target: float | dict[str, float] | None = None
     # Optional command-reference speed in degrees/s, measured from the last sent
-    # target, NOT from feedback. Requires max_relative_target as a separate
+    # target, NOT from feedback. max_relative_target remains an optional separate
     # tracking-error bound. This does not guarantee actual physical joint speed.
     max_target_velocity_deg_s: float | None = None
     # Prevent accumulated elapsed time after inference/pauses from causing a jump.

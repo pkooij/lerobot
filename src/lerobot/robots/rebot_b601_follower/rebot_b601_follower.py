@@ -73,10 +73,6 @@ class RebotB601Follower(Robot):
         self._target_limiter = None
         self._target_send_failed = False
         if config.max_target_velocity_deg_s is not None:
-            if config.max_relative_target is None:
-                raise ValueError(
-                    "Target rate limiting requires max_relative_target as a tracking-error bound"
-                )
             self._target_limiter = JointTargetRateLimiter(
                 config.max_target_velocity_deg_s, config.max_target_step_deg
             )
@@ -275,6 +271,8 @@ class RebotB601Follower(Robot):
         if self._target_send_failed:
             raise RuntimeError("A target send failed; reconnect before resuming rate-limited commands")
         goal_pos = {key.removesuffix(".pos"): val for key, val in action.items() if key.endswith(".pos")}
+        if self._target_limiter is not None and any(not math.isfinite(value) for value in goal_pos.values()):
+            raise ValueError("Nonfinite action target; refusing rate-limited commands")
 
         # Clip against soft joint limits.
         for motor_name in list(goal_pos):

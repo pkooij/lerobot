@@ -55,3 +55,26 @@ rate-limited, tracking-limited targets. Each retry needs a fresh recording direc
 setting, while preserving the 5° tracking-error bound. Start with the 30°/s setup;
 the higher setting is not needed just to distinguish rate limiting from the old
 measurement-relative clamp.
+
+## Explicitly disabling software position bounds
+
+For the user-requested rate-only experiment, preparation also accepts:
+
+```bash
+--max-target-velocity 120 --max-target-step 10 --disable-relative-target --disable-joint-limits
+```
+
+This sets each arm's `max_relative_target` to JSON `null` and `joint_limits` to
+`{}`. It retains the 120°/s / 10°-per-send reference limiter, finite target/feedback
+checks, and failed-send handling. Neither flag changes firmware protections,
+calibration, controller gains or control mode. The helper requires an explicit
+target rate when either position bound is disabled.
+
+At a regular 30 Hz cadence, 120°/s permits about 4° per send. The 10° cap is an
+additional ceiling for longer gaps, not a command to move 10° on every tick.
+
+Without the tracking-error cap, the commanded reference can continue advancing
+while the measured joint stalls. Without software joint-angle clamps, it can
+also advance beyond the previously configured angle range. This can increase
+motor effort and permit motion beyond that range; smooth targets do not establish
+safe physical motion. No hardware run is performed by configuration preparation.

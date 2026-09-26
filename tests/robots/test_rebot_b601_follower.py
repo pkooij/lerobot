@@ -184,3 +184,21 @@ def test_driver_missing_feedback_and_failed_send_cannot_resume_silently(follower
         follower.send_action({"shoulder_pan.pos": 100.0})
     with pytest.raises(RuntimeError, match="reconnect"):
         follower.send_action({"shoulder_pan.pos": 100.0})
+
+
+def test_rate_only_driver_can_advance_beyond_old_error_and_software_angle_bounds(follower):
+    follower._target_limiter = JointTargetRateLimiter(60, 2)
+    follower.config.max_relative_target = None
+    follower.config.joint_limits = {}
+    with patch(f"{_MODULE}.time.monotonic", side_effect=[i / 30 for i in range(101)]):
+        sent = [follower.send_action({"shoulder_pan.pos": 1000.0})["shoulder_pan.pos"] for _ in range(101)]
+    assert sent[0] == pytest.approx(1)
+    assert sent[-1] == pytest.approx(201)
+    assert max(b - a for a, b in zip(sent, sent[1:], strict=False)) <= 2 + 1e-9
+
+
+def test_rate_limited_driver_rejects_nonfinite_action_before_soft_clipping(follower):
+    follower._target_limiter = JointTargetRateLimiter(60, 2)
+    with pytest.raises(ValueError, match="Nonfinite"):
+        follower.send_action({"shoulder_pan.pos": math.nan})
+    follower.motors["shoulder_pan"].send_mit.assert_not_called()

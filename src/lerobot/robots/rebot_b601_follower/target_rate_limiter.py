@@ -10,7 +10,8 @@ class JointTargetRateLimiter:
 
     Elapsed time bounds speed; the per-send bound prevents a pause or slow
     inference from accumulating a large catch-up step. The first send holds the
-    measured pose. A separate tracking-error envelope prevents reference windup.
+    measured pose. An optional tracking-error envelope prevents reference windup;
+    when disabled, targets may continue advancing while the measured joint stalls.
     """
 
     def __init__(self, velocity_deg_s: float, step_deg: float):
@@ -30,7 +31,7 @@ class JointTargetRateLimiter:
         goals: dict[str, float],
         present: dict[str, float],
         joint_limits: dict[str, tuple[float, float]],
-        max_error: float | dict[str, float],
+        max_error: float | dict[str, float] | None,
         now: float,
     ) -> dict[str, float]:
         if not math.isfinite(now) or (self._time is not None and now < self._time):
@@ -40,17 +41,24 @@ class JointTargetRateLimiter:
         targets = {}
         for name, goal in goals.items():
             measured = present[name]
-            error = max_error[name] if isinstance(max_error, dict) else max_error
-            if not all(math.isfinite(x) for x in (goal, measured, error)) or error <= 0:
-                raise ValueError(f"Invalid target, feedback or tracking-error limit for {name}")
+            if not all(math.isfinite(x) for x in (goal, measured)):
+                raise ValueError(f"Invalid target or feedback for {name}")
             previous = self._targets.get(name, measured)
             step = budget if name in self._targets else 0.0
             minimum, maximum = joint_limits.get(name, (-math.inf, math.inf))
-            lower = max(previous - step, measured - error, minimum)
-            upper = min(previous + step, measured + error, maximum)
+            lower = max(previous - step, minimum)
+            upper = min(previous + step, maximum)
+            if max_error is not None:
+                error = max_error[name] if isinstance(max_error, dict) else max_error
+                if not math.isfinite(error) or error <= 0:
+                    raise ValueError(f"Invalid tracking-error limit for {name}")
+                lower = max(lower, measured - error)
+                upper = min(upper, measured + error)
             if lower > upper:
                 raise ValueError(
-                    f"Cannot satisfy target rate, tracking error and joint limits for {name}; "
+                    f"Cannot satisfy configured target constraints for {name} "
+                    f"(previous={previous:.4f}, measured={measured:.4f}, step={step:.4f}, "
+                    f"allowed=[{lower:.4f}, {upper:.4f}]); "
                     "stopping commands instead of jumping to a new reference"
                 )
             targets[name] = max(lower, min(upper, goal))

@@ -45,11 +45,27 @@ def main():
     )
     parser.add_argument("--hardware-root", type=Path, default=Path.home() / "rebot-steerable-artifacts")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--max-relative-target", type=float, default=5.0)
+    relative_limit = parser.add_mutually_exclusive_group()
+    relative_limit.add_argument("--max-relative-target", type=float, default=5.0)
+    relative_limit.add_argument(
+        "--disable-relative-target",
+        action="store_true",
+        help="Remove the measured-position error cap; requires an explicit --max-target-velocity",
+    )
+    parser.add_argument(
+        "--disable-joint-limits",
+        action="store_true",
+        help="Remove configurable software joint-angle clamps; requires --max-target-velocity",
+    )
     parser.add_argument(
         "--max-target-velocity",
         type=float,
-        help="Optional target slew rate in deg/s (up to 60); also caps each send to rate/30 degrees",
+        help="Optional target slew rate in deg/s (up to 120); default send cap is rate/30 degrees",
+    )
+    parser.add_argument(
+        "--max-target-step",
+        type=float,
+        help="Optional per-send cap in degrees (up to 10); requires a target rate",
     )
     parser.add_argument("--duration", type=float, default=120.0)
     parser.add_argument(
@@ -59,14 +75,21 @@ def main():
         "--task", default="Use the left arm to pick up the blue block and place it into the black bin."
     )
     args = parser.parse_args()
+    if (args.disable_relative_target or args.disable_joint_limits) and args.max_target_velocity is None:
+        parser.error("Disabling position limits requires --max-target-velocity")
+    if args.max_target_step is not None:
+        if args.max_target_velocity is None:
+            parser.error("--max-target-step requires --max-target-velocity")
+        if not math.isfinite(args.max_target_step) or not 0 < args.max_target_step <= 10:
+            parser.error("--max-target-step must be finite and in (0, 10] degrees")
     if not math.isfinite(args.max_relative_target) or not 0 < args.max_relative_target <= 5:
         parser.error("--max-relative-target must be finite and in (0, 5] degrees")
     if not math.isfinite(args.duration) or args.duration <= 0:
         parser.error("--duration must be finite and positive")
     if args.max_target_velocity is not None and (
-        not math.isfinite(args.max_target_velocity) or not 0 < args.max_target_velocity <= 60
+        not math.isfinite(args.max_target_velocity) or not 0 < args.max_target_velocity <= 120
     ):
-        parser.error("--max-target-velocity must be finite and in (0, 60] degrees/second")
+        parser.error("--max-target-velocity must be finite and in (0, 120] degrees/second")
     if args.hardware_config == Path("auto"):
         try:
             args.hardware_config = latest_hardware_config(args.hardware_root)
@@ -79,10 +102,14 @@ def main():
     for arm in ("left_arm_config", "right_arm_config"):
         if not robot.get(arm, {}).get("port"):
             parser.error(f"Missing {arm}.port")
-        robot[arm]["max_relative_target"] = args.max_relative_target
+        robot[arm]["max_relative_target"] = None if args.disable_relative_target else args.max_relative_target
+        if args.disable_joint_limits:
+            robot[arm]["joint_limits"] = {}
         if args.max_target_velocity is not None:
             robot[arm]["max_target_velocity_deg_s"] = args.max_target_velocity
-            robot[arm]["max_target_step_deg"] = args.max_target_velocity / 30
+            robot[arm]["max_target_step_deg"] = (
+                args.max_target_step if args.max_target_step is not None else args.max_target_velocity / 30
+            )
     camera_names = set(robot.get("cameras", {}))
     for side in ("left", "right"):
         camera_names.update(f"{side}_{name}" for name in robot[f"{side}_arm_config"].get("cameras", {}))
