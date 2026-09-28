@@ -24,12 +24,13 @@ def hardware():
     }
 
 
-def test_config_preserves_confirmed_hardware_and_uses_fresh_local_recording(tmp_path):
+@pytest.mark.parametrize("condition", ["subtask_direct", "task_only_direct", "subtask_autosteer"])
+def test_config_preserves_confirmed_hardware_and_uses_fresh_local_recording(tmp_path, condition):
     source = hardware()
     before = copy.deepcopy(source)
     config = make_config(
         source,
-        {"duration": 120, "goal": "Place five objects in bin.", "condition": "subtask_direct"},
+        {"duration": 120, "goal": "Place five objects in bin.", "condition": condition},
         tmp_path,
     )
     assert source == before and config["robot"] == before["robot"]
@@ -38,6 +39,7 @@ def test_config_preserves_confirmed_hardware_and_uses_fresh_local_recording(tmp_
     assert config["interactive"] and not config["return_to_initial_position"]
     assert config["interpolation_multiplier"] == 2
     assert not config["dataset"]["push_to_hub"]
+    assert config["dataset"]["repo_id"] == f"pepijn223/rollout_eval_rebot_20k_{condition}"
     assert not (tmp_path / "dataset").exists()
 
 

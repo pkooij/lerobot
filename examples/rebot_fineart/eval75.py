@@ -46,7 +46,7 @@ def make_config(source, plan, output):
         "play_sounds": False,
         "return_to_initial_position": False,
         "dataset": {
-            "repo_id": f"pepijn223/eval_rebot_20k_{plan['condition']}",
+            "repo_id": f"pepijn223/rollout_eval_rebot_20k_{plan['condition']}",
             "root": str(output / "dataset"),
             "push_to_hub": False,
             "private": True,
