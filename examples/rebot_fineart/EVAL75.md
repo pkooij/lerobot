@@ -29,8 +29,8 @@ helpers; it does not update the robot checkout or open hardware. Your checked
 
 ```bash
 mkdir -p ~/rebot-eval75
-EVAL_SOURCE=https://raw.githubusercontent.com/pkooij/lerobot/f42c609b1/examples/rebot_fineart
-for FILE in eval75.py eval75_madeleine.py models_20k.json; do
+EVAL_SOURCE=https://raw.githubusercontent.com/pkooij/lerobot/33c529987/examples/rebot_fineart
+for FILE in eval75.py eval75_madeleine.py eval75_resident.py models_20k.json; do
   curl -fL "$EVAL_SOURCE/$FILE" -o "$HOME/rebot-eval75/$FILE" || break
 done
 cd ~/lerobot-fineart
@@ -39,7 +39,7 @@ cd ~/lerobot-fineart
 **A — task-only, 25 trials:**
 
 ```bash
-~/.local/bin/uv run --no-sync python ~/rebot-eval75/eval75_madeleine.py \
+~/.local/bin/uv run --no-sync python ~/rebot-eval75/eval75_resident.py \
   --hardware /home/madeleine/rebot-eval75/hardware.json \
   --duration 120 --condition task_only_direct
 ```
@@ -47,7 +47,7 @@ cd ~/lerobot-fineart
 **B — subtask-trained, direct, 25 trials:**
 
 ```bash
-~/.local/bin/uv run --no-sync python ~/rebot-eval75/eval75_madeleine.py \
+~/.local/bin/uv run --no-sync python ~/rebot-eval75/eval75_resident.py \
   --hardware /home/madeleine/rebot-eval75/hardware.json \
   --duration 120 --condition subtask_direct
 ```
@@ -55,7 +55,7 @@ cd ~/lerobot-fineart
 **C — subtask-trained, native autosteer, 25 trials:**
 
 ```bash
-~/.local/bin/uv run --no-sync python ~/rebot-eval75/eval75_madeleine.py \
+~/.local/bin/uv run --no-sync python ~/rebot-eval75/eval75_resident.py \
   --hardware /home/madeleine/rebot-eval75/hardware.json \
   --duration 120 --condition subtask_autosteer
 ```
@@ -63,9 +63,14 @@ cd ~/lerobot-fineart
 For the paper schedule, append `--trial 1` to each command in ABC order, then
 `--trial 2` in BCA order, `--trial 3` in CAB order, and repeat through 25.
 The first invocation asks for five object names; all conditions reuse that goal.
+The model loads **once per condition**, and robot/cameras stay connected between trials.
 Type `/start` once per trial. For C, immediately paste the printed `/autosteer …`
-command. Use `/stop` after completion/timeout, then enter the score.
-Already scored trials are skipped. Recordings/results are in
+command. `/stop` ends and scores the current trial while keeping the model loaded;
+`/quit` ends the evaluation. No automatic reset motion: `/reset` explicitly returns
+the arms to the initial pose before the next `/start`.
+Already scored trials are skipped, including results from the previous launcher.
+Each new trial is a separate episode in the resident session dataset, with its
+episode index saved alongside the score and individual action trace. Recordings/results are in
 `~/rebot-eval75/rebot-eval75-madeleine-20k/`.
 
 ## Laptop webcam (separate Mac terminal)
