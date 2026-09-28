@@ -6,6 +6,7 @@ No hardware is opened until the user runs a condition. Uses only stdlib on Mac.
 import argparse
 import base64
 import json
+import os
 import re
 import shlex
 import shutil
@@ -58,6 +59,62 @@ def make_config(source, plan, output):
 
 
 def remote(plan):
+    # Hold this across the complete session, including hardware shutdown.
+    import fcntl
+
+    lock = Path.home() / "rebot-eval75/rollout.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open("a") as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("Another evaluation is running; stop it before starting a new one") from exc
+        assert_no_existing_rollout()
+        return _remote(plan)
+
+
+def assert_no_existing_rollout(proc_root=Path("/proc")):
+    """Also catch abandoned sessions started by older launcher versions."""
+    for path in proc_root.glob("[0-9]*/cmdline"):
+        try:
+            if path.stat().st_uid != os.getuid():
+                continue
+            argv = path.read_bytes().split(b"\0")
+        except (FileNotFoundError, PermissionError):
+            continue
+        if b"lerobot.scripts.lerobot_rollout" in argv:
+            raise RuntimeError(
+                f"Rollout PID {path.parent.name} is still running or shutting down. "
+                "Stop that session and wait for it to exit before retrying."
+            )
+
+
+def run_rollout_process(command, checkout):
+    """Own the entire uv/python/tee process group so Ctrl+C cannot orphan it."""
+    process = subprocess.Popen(command, cwd=checkout, start_new_session=True)
+    try:
+        return process.wait()
+    finally:
+        for sig, timeout in ((signal.SIGINT, 5), (signal.SIGTERM, 3), (signal.SIGKILL, 2)):
+            try:
+                os.killpg(process.pid, sig)
+            except ProcessLookupError:
+                break
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                process.poll()  # Reap the parent so its zombie does not keep the group alive.
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                continue
+            break
+        process.poll()
+
+
+def _remote(plan):
     checkout = Path(plan["checkout"]).expanduser()
     hardware = Path(plan["hardware"]).expanduser()
     output = Path.home() / "rebot-eval75" / plan["campaign"] / plan["condition"] / plan["attempt"]
@@ -95,19 +152,21 @@ def remote(plan):
     tee = shutil.which("tee")
     if not bash or not tee:
         raise RuntimeError("bash and tee are required")
-    result = subprocess.run(
+    returncode = run_rollout_process(
         [
             bash,
             "-o",
             "pipefail",
             "-c",
-            shlex.join(command) + " 2>&1 | " + shlex.join([tee, str(output / "terminal.log")]),
+            "ulimit -c 0; "
+            + shlex.join(command)
+            + " 2>&1 | "
+            + shlex.join([tee, str(output / "terminal.log")]),
         ],
-        cwd=checkout,
-        check=False,
+        checkout,
     )
-    if result.returncode:
-        return result.returncode
+    if returncode:
+        return returncode
     info_path = output / "dataset/meta/info.json"
     info = json.loads(info_path.read_text()) if info_path.exists() else {}
     log = (output / "terminal.log").read_text(errors="replace")

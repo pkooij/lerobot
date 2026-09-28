@@ -1,9 +1,10 @@
 import copy
 import json
+import signal
 from types import SimpleNamespace
 
 import pytest
-from eval75 import make_config, remote
+from eval75 import assert_no_existing_rollout, make_config, remote, run_rollout_process
 
 
 def hardware():
@@ -84,7 +85,42 @@ def test_remote_counts_only_one_recorded_run_in_correct_mode(
         (output / "terminal.log").write_text(
             "Rollout running — task\n" * starts + ("Autosteer on — goal\n" if steering else "")
         )
-        return SimpleNamespace(returncode=0)
+        return 0
 
-    monkeypatch.setattr("eval75.subprocess.run", fake_rollout)
+    monkeypatch.setattr("eval75.run_rollout_process", fake_rollout)
     assert remote(plan) == expected
+
+
+def test_existing_rollout_blocks_new_session_but_unrelated_server_does_not(tmp_path):
+    proc = tmp_path / "123"
+    proc.mkdir()
+    command = proc / "cmdline"
+    command.write_bytes(b"python\0server.py\0")
+    assert_no_existing_rollout(tmp_path)
+    command.write_bytes(b"python\0-m\0lerobot.scripts.lerobot_rollout\0")
+    with pytest.raises(RuntimeError, match="PID 123"):
+        assert_no_existing_rollout(tmp_path)
+
+
+def test_interrupt_signals_owned_group_and_reaps_parent(monkeypatch, tmp_path):
+    signals = []
+    polls = []
+
+    def interrupted():
+        raise KeyboardInterrupt
+
+    def signal_group(pid, sig):
+        assert pid == 12345
+        if sig == 0:
+            raise ProcessLookupError
+        signals.append(sig)
+
+    def spawn(command, *, cwd, start_new_session):
+        assert start_new_session and cwd == tmp_path
+        return SimpleNamespace(pid=12345, wait=interrupted, poll=lambda: polls.append(True))
+
+    monkeypatch.setattr("eval75.subprocess.Popen", spawn)
+    monkeypatch.setattr("eval75.os.killpg", signal_group)
+    with pytest.raises(KeyboardInterrupt):
+        run_rollout_process(["test"], tmp_path)
+    assert signals == [signal.SIGINT] and polls
