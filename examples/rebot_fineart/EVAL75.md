@@ -29,7 +29,7 @@ helpers; it does not update the robot checkout or open hardware. Your checked
 
 ```bash
 mkdir -p ~/rebot-eval75
-EVAL_SOURCE=https://raw.githubusercontent.com/pkooij/lerobot/2d37e76b1/examples/rebot_fineart
+EVAL_SOURCE=https://raw.githubusercontent.com/pkooij/lerobot/c126fa2c6/examples/rebot_fineart
 for FILE in eval75.py eval75_madeleine.py models_20k.json; do
   curl -fL "$EVAL_SOURCE/$FILE" -o "$HOME/rebot-eval75/$FILE" || break
 done
