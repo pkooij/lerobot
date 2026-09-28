@@ -219,6 +219,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--condition", required=True, choices=CONDITIONS)
     parser.add_argument("--trial", type=int, choices=range(1, 26))
+    parser.add_argument(
+        "--num-trials",
+        type=int,
+        choices=range(1, 26),
+        default=25,
+        help="Run scene IDs 1 through N, skipping already scored scenes",
+    )
     parser.add_argument("--duration", type=int, default=120)
     parser.add_argument("--campaign", default="rebot-eval75-madeleine-20k")
     parser.add_argument("--hardware", type=Path, default=Path.home() / "rebot-eval75/hardware.json")
@@ -244,7 +251,7 @@ def main():
         block.mkdir(exist_ok=True)
         pending = [
             t
-            for t in ([args.trial] if args.trial else range(1, 26))
+            for t in ([args.trial] if args.trial else range(1, args.num_trials + 1))
             if not (block / f"trial_{t:02d}.json").exists()
         ]
         if not pending:
