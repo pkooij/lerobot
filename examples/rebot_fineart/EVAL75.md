@@ -29,7 +29,7 @@ helpers; it does not update the robot checkout or open hardware. Your checked
 
 ```bash
 mkdir -p ~/rebot-eval75
-EVAL_SOURCE=https://raw.githubusercontent.com/pkooij/lerobot/33c529987/examples/rebot_fineart
+EVAL_SOURCE=https://raw.githubusercontent.com/pkooij/lerobot/c213eb01f/examples/rebot_fineart
 for FILE in eval75.py eval75_madeleine.py eval75_resident.py models_20k.json; do
   curl -fL "$EVAL_SOURCE/$FILE" -o "$HOME/rebot-eval75/$FILE" || break
 done
@@ -51,6 +51,10 @@ cd ~/lerobot-fineart
   --hardware /home/madeleine/rebot-eval75/hardware.json \
   --duration 120 --condition subtask_direct
 ```
+
+For the current **10-trial comparison**, append `--num-trials 10` to B and C.
+This runs scene IDs 1–10, matching the ten completed task-only trials, for 30
+episodes total across conditions. Already scored scenes are skipped on resume.
 
 **C — subtask-trained, native autosteer, 25 trials:**
 
