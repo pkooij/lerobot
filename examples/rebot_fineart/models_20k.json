@@ -1,0 +1,16 @@
+{
+  "subtask": {
+    "repo_id": "pepijn223/rebot-fineart-pi052-subtask-augmented-20k-20260926",
+    "revision": "a1334b7d55633dc34b8ba6a92da6994f2a96f3ec",
+    "private": false,
+    "weight_sha256": "ccb05ce8a7d289fb07d38b407f322165c9035204c036a83ed697021e0a4e0886",
+    "hub_integrity_checked": true
+  },
+  "task_only": {
+    "repo_id": "pepijn223/rebot-fineart-pi052-task-only-augmented-20k-20260926",
+    "revision": "3148d7458c20965e87bde579299bae608f97558d",
+    "private": false,
+    "weight_sha256": "9a329c42ea0b947d4609cffbf87aa9daf7fde83b8a7927f7fe480461b6431701",
+    "hub_integrity_checked": true
+  }
+}
