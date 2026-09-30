@@ -11,6 +11,11 @@ from pathlib import Path
 CONDITIONS = ("human", "planner", "hybrid", "astra", "astra_icl")
 TASK = "Put all colored cubes in the green bin."
 
+CUBE_INSTRUCTIONS = [
+    f"Pick up the {color} block and place it in the green bin."
+    for color in ("red", "orange", "yellow", "green", "blue", "purple")
+]
+
 
 def make_manifest(colors: list[str], seed: int = 42, conditions: tuple[str, ...] = CONDITIONS) -> dict:
     if len(colors) != len(set(colors)) or any(not color.strip() for color in colors):

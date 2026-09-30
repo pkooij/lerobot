@@ -125,11 +125,12 @@ class VlmPlanner:
     def __call__(self, obs_processed: dict, query: PolicyQuery, task: str) -> str:
         started = time.perf_counter()
         messages = self.build_messages(obs_processed, query, task)
+        reply = None
         try:
             reply = self.client.generate_json([messages])[0]
             text = self.parse_reply(reply, query, task)
         except Exception as e:
-            self._log_exchange(query, task, started, reply=None, returned=None, error=e)
+            self._log_exchange(query, task, started, reply=reply, returned=None, error=e)
             raise
         if query.kind is QueryKind.NEXT_SUBTASK and isinstance(reply, dict):
             self._assessments.append(

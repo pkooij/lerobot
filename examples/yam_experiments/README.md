@@ -202,3 +202,25 @@ memory. Reset model session/history between trials in both Astra conditions.
 - [Inspect Robots](https://github.com/robocurve/inspect-robots): swappable policy/embodiment contracts, attended resets, auditable trial records.
 - [SE3 Labs comparison](https://se3labs.ai/blog/agentic-vs-code-as-policy/): distinguishes online agent decisions from frozen generated control code; the proposed conditions are online agentic control.
 - [OpenAI structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs): schema-constrained replies still require semantic and robot-state validation.
+
+## Single-cube planner contract
+
+The first pilot exposed a failure mode: Qwen repeated the entire multi-cube goal,
+then marked that broad instruction as still in progress indefinitely. The cube
+experiment now supplies a closed vocabulary of one-cube pick-and-place instructions
+(red, orange, yellow, green, blue, purple). This is not an assertion that all six
+colors are present: Qwen must choose only visible, unfinished cubes. Different
+objects or colors require updating this experiment vocabulary before scoring.
+
+Before the first plan there is explicitly no previous command. The first reply
+must select one cube and report `previous_command: none`. A broad goal is rejected
+before it can release the initial RTC action queue. Subsequent `in progress`
+assessments hold the accepted single-cube command; `completed` permits the next
+cube. Invalid replies end the attempt and request home, rather than silently
+turning the planner condition into broad-goal-only MolmoAct2.
+
+Each reply prints its scene, previous-command assessment, proposed instruction,
+and latency even while normal INFO logs are muted. The selected instruction prints
+separately, since an in-progress proposal can be held. Rejected and `done` replies
+are retained in `planner.jsonl`. These scene assessments are model claims, not
+operator-verified outcomes. The same contract runs in the saved-image preflight.

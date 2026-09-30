@@ -15,10 +15,6 @@ from pathlib import Path
 from .campaign import CONDITIONS, TASK, Journal
 
 
-class PlannerFinishedError(RuntimeError):
-    """Completion stops the trial and requests operator scoring, not automatic success."""
-
-
 def launcher_arguments(path: Path) -> list[str]:
     text = path.read_text()
     if text.count("lerobot-rollout") != 1:
@@ -61,6 +57,9 @@ def prepare_arguments(
         }
     )
     if "planner.model_id" in flags:
+        from .campaign import CUBE_INSTRUCTIONS
+
+        flags["planner.instructions"] = json.dumps(CUBE_INSTRUCTIONS)
         flags["planner.log_path"] = str(session_dir / "planner.jsonl")
     if flags.get("robot.type") != "bi_yam_follower":
         raise ValueError("This harness requires the tested bi_yam_follower adapter")
@@ -137,29 +136,15 @@ def main():
         os.environ["HF_TOKEN"] = token
     # Delayed imports keep manifest generation and preview independent of robotics dependencies.
     from lerobot.rollout import context
-    from lerobot.rollout.planner import VlmPlanner
     from lerobot.scripts import lerobot_rollout
 
+    from .planner import CubePlanner
     from .session import ExperimentSession
-
-    class StoppingPlanner(VlmPlanner):
-        def parse_reply(self, reply, query, task):
-            from lerobot.rollout.inference import QueryKind
-
-            if (
-                query.kind is QueryKind.NEXT_SUBTASK
-                and isinstance(reply, dict)
-                and reply.get("instruction") == "done"
-            ):
-                # The engine's epoch cancellation discards stale completions. A live
-                # error answer reaches the trial session, which requests a home reset.
-                raise PlannerFinishedError("Planner reports done; operator must score the trial")
-            return super().parse_reply(reply, query, task)
 
     original_planner = context.VlmPlanner
     original_session = lerobot_rollout.InteractiveSession
     try:
-        context.VlmPlanner = StoppingPlanner
+        context.VlmPlanner = CubePlanner
         lerobot_rollout.InteractiveSession = partial(
             ExperimentSession,
             journal=journal,

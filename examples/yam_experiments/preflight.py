@@ -11,9 +11,10 @@ from huggingface_hub import get_token
 from PIL import Image
 
 from lerobot.rollout.inference import PolicyQuery, QueryKind
-from lerobot.rollout.planner import PlannerConfig, VlmPlanner
+from lerobot.rollout.planner import PlannerConfig
 
-from .campaign import TASK
+from .campaign import CUBE_INSTRUCTIONS, TASK
+from .planner import CubePlanner
 
 
 def main():
@@ -40,11 +41,12 @@ def main():
         max_new_tokens=512,
         chat_template_kwargs={"enable_thinking": False},
         history=2,
+        instructions=CUBE_INSTRUCTIONS,
         log_path=str(args.log),
     )
     started = time.monotonic()
     try:
-        planner = VlmPlanner(config, "bi_yam_follower")
+        planner = CubePlanner(config, "bi_yam_follower")
         instruction = planner(obs, PolicyQuery(QueryKind.NEXT_SUBTASK, TASK), TASK)
     except Exception as exc:
         # Avoid traceback/config dumps in the authentication failure path.
