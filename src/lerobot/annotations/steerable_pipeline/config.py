@@ -167,6 +167,10 @@ class VlmConfig:
     # OpenAI-compatible endpoint; ``EMPTY`` key works for local servers.
     api_base: str = "http://localhost:8000/v1"
     api_key: str = "EMPTY"
+    # Resolve credentials at client construction; keep secrets out of CLI/config logs.
+    api_key_env: str | None = None
+    request_timeout_s: float = 600.0
+    request_max_retries: int = 2
 
     # Spawn a server if none answers api_base; False = fail fast on a remote.
     auto_serve: bool = True

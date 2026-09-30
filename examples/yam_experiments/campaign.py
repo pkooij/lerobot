@@ -12,14 +12,16 @@ CONDITIONS = ("human", "planner", "hybrid", "astra", "astra_icl")
 TASK = "Put all colored cubes in the green bin."
 
 
-def make_manifest(colors: list[str], seed: int = 42) -> dict:
+def make_manifest(colors: list[str], seed: int = 42, conditions: tuple[str, ...] = CONDITIONS) -> dict:
     if len(colors) != len(set(colors)) or any(not color.strip() for color in colors):
         raise ValueError("Use unique nonempty cube labels, e.g. red-1 red-2 blue-1")
-    order = list(CONDITIONS)
+    if not conditions or len(set(conditions)) != len(conditions) or set(conditions) - set(CONDITIONS):
+        raise ValueError("Select unique known conditions")
+    order = list(conditions)
     random.Random(seed).shuffle(order)
     trials = []
     for layout in range(1, 11):
-        # Ten matched layouts, balanced position within each block (twice/condition).
+        # Rotate each condition through block positions across ten matched layouts.
         rotation = (layout - 1) % len(order)
         for condition in order[rotation:] + order[:rotation]:
             trials.append({"id": f"{condition}-L{layout:02}", "condition": condition, "layout": layout})
@@ -29,6 +31,7 @@ def make_manifest(colors: list[str], seed: int = 42) -> dict:
         "cube_labels": colors,
         "seed": seed,
         "trials": trials,
+        "excluded_conditions": [c for c in CONDITIONS if c not in conditions],
         "success_rule": "Every listed cube released fully inside the green bin and at rest for 2 seconds.",
         "physical_intervention_rule": "End the trial as interrupted; do not resume it as an unassisted success.",
         "timeout_s": None,
@@ -64,6 +67,8 @@ def summarize(root: Path) -> dict:
                 attempts.append(event)
             if event["event"] == "verdict":
                 rows.append(event)
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else make_manifest([])
     result = {}
     for condition in CONDITIONS:
         formal = [r for r in rows if r["condition"] == condition and not r["pilot"]]
@@ -78,7 +83,8 @@ def summarize(root: Path) -> dict:
             "attempted": len(attempted),
             "unscored_attempts": unscored,
             "scored": len(formal),
-            "planned": 10,
+            "planned": sum(t["condition"] == condition for t in manifest["trials"]),
+            "excluded": condition in manifest.get("excluded_conditions", []),
             "successes": sum(r["outcome"] == "success" for r in formal),
             "interrupted": sum(r["outcome"] == "interrupted" for r in formal),
             "success_rate": sum(r["outcome"] == "success" for r in formal) / len(formal)
@@ -93,13 +99,16 @@ def main():
     parser.add_argument("command", choices=["init", "report"])
     parser.add_argument("root", type=Path)
     parser.add_argument("--cubes", nargs="*", default=[])
+    parser.add_argument("--conditions", nargs="+", choices=CONDITIONS, default=list(CONDITIONS))
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     if args.command == "init":
         args.root.mkdir(parents=True, exist_ok=True)
         with (args.root / "manifest.json").open("x") as stream:
-            json.dump(make_manifest(args.cubes, args.seed), stream, indent=2)
-        print(f"Created 50 planned trials in {args.root / 'manifest.json'}. No robot connection.")
+            json.dump(make_manifest(args.cubes, args.seed, tuple(args.conditions)), stream, indent=2)
+        print(
+            f"Created {10 * len(args.conditions)} planned trials in {args.root / 'manifest.json'}. No robot connection."
+        )
     else:
         print(json.dumps(summarize(args.root), indent=2))
 

@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -37,7 +38,7 @@ def prepare_arguments(
         if not token.startswith("--") or "=" not in token:
             raise ValueError("Pass rollout overrides as --key=value")
         key, value = token[2:].split("=", 1)
-        if "api_key" in key.lower() or "token" in key.lower():
+        if key.rsplit(".", 1)[-1].lower() in {"api_key", "token", "access_token", "hf_token"}:
             raise ValueError("Do not put credentials in launcher flags or experiment logs")
         flags[key] = value
     flags.update(
@@ -59,6 +60,8 @@ def prepare_arguments(
             "resume": "false",
         }
     )
+    if "planner.model_id" in flags:
+        flags["planner.log_path"] = str(session_dir / "planner.jsonl")
     if flags.get("robot.type") != "bi_yam_follower":
         raise ValueError("This harness requires the tested bi_yam_follower adapter")
     return [f"--{key}={value}" for key, value in flags.items()]
@@ -79,6 +82,8 @@ def main():
         parser.error(
             "Direct/hybrid Astra motion is not commissioned yet: configure the endpoint and validate its action adapter first."
         )
+    if args.condition in manifest.get("excluded_conditions", []):
+        parser.error(f"Condition {args.condition} is excluded from this campaign")
     if not args.pilot and (not manifest["cube_labels"] or not manifest["timeout_s"]):
         parser.error("After pilots, freeze cube labels and a common positive timeout_s in manifest.json")
     if args.condition == "human" and any(x.startswith("--planner.") for x in extra):
@@ -121,6 +126,15 @@ def main():
         launcher_sha256=hashlib.sha256(args.launcher.read_bytes()).hexdigest(),
         manifest=manifest,
     )
+    if "--planner.api_base=https://router.huggingface.co/v1" in argv:
+        from huggingface_hub import get_token
+
+        if "--planner.api_key_env=HF_TOKEN" not in argv:
+            parser.error("HF Router requires --planner.api_key_env=HF_TOKEN")
+        token = get_token()
+        if not token:
+            parser.error("Log in with hf auth login using an Inference Providers token")
+        os.environ["HF_TOKEN"] = token
     # Delayed imports keep manifest generation and preview independent of robotics dependencies.
     from lerobot.rollout import context
     from lerobot.rollout.planner import VlmPlanner

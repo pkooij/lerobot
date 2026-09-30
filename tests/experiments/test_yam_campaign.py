@@ -145,3 +145,37 @@ def test_stop_in_hold_mode_finishes_trial_before_scoring(tmp_path):
     obj.controller.stop.assert_not_called()
     assert obj._awaiting_verdict
     assert not obj._home_ready
+
+
+def test_skip_human_preserves_ten_matched_layouts_and_report(tmp_path):
+    active = tuple(c for c in CONDITIONS if c != "human")
+    manifest = make_manifest(["red"], conditions=active)
+    assert len(manifest["trials"]) == 40
+    assert manifest["excluded_conditions"] == ["human"]
+    for condition in active:
+        assert sorted(t["layout"] for t in manifest["trials"] if t["condition"] == condition) == list(
+            range(1, 11)
+        )
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    report = summarize(tmp_path)
+    assert report["human"]["planned"] == 0
+    assert report["human"]["excluded"]
+    assert report["planner"]["planned"] == 10
+
+
+def test_hosted_planner_flags_allow_token_budget_but_not_secret(tmp_path):
+    flags = prepare_arguments(
+        ["--robot.type=bi_yam_follower"],
+        [
+            "--planner.model_id=Qwen/Qwen3.8-27B:novita",
+            "--planner.api_key_env=HF_TOKEN",
+            "--planner.max_new_tokens=512",
+            "--planner.log_path=/ignored",
+        ],
+        tmp_path,
+        "goal",
+        0,
+    )
+    assert "--planner.api_key_env=HF_TOKEN" in flags
+    assert "--planner.max_new_tokens=512" in flags
+    assert f"--planner.log_path={tmp_path / 'planner.jsonl'}" in flags

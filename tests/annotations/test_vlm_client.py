@@ -39,3 +39,29 @@ def test_bind_serve_port_appends_when_missing() -> None:
 def test_bind_serve_port_leaves_explicit_port_untouched() -> None:
     cmd = "vllm serve M --port 9000"
     assert _bind_serve_port(cmd, 8000) == cmd
+
+
+def test_hosted_credentials_stay_out_of_config(monkeypatch):
+    import sys
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from lerobot.annotations.steerable_pipeline.config import VlmConfig
+    from lerobot.annotations.steerable_pipeline.vlm_client import make_vlm_client
+
+    constructor = MagicMock()
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=constructor))
+    config = VlmConfig(
+        auto_serve=False, api_key_env="TEST_PLANNER_KEY", request_timeout_s=30, request_max_retries=0
+    )
+    monkeypatch.delenv("TEST_PLANNER_KEY", raising=False)
+    with pytest.raises(ValueError, match="Missing credential environment"):
+        make_vlm_client(config)
+    constructor.assert_not_called()
+    monkeypatch.setenv("TEST_PLANNER_KEY", "test-secret")
+    make_vlm_client(config)
+    constructor.assert_called_once_with(
+        base_url=config.api_base, api_key="test-secret", timeout=30, max_retries=0
+    )
+    assert "test-secret" not in str(asdict(config))

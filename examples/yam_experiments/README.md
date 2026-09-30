@@ -1,71 +1,93 @@
-# YAM prompting and five-condition campaign
+# YAM external-planner campaign
 
-This experiment branch is based on `codex/yam-motorbus-molmoact2` at `9413515a9`
+This experiment branch is based on `codex/yam-motorbus-molmoact2` with the latest home-return and interpolation fixes
 and integrates PR #4675 at `efcc65c99`. It does not alter the working hardware PR.
 All actuation continues through LeRobot's YAM adapter and Damiao MotorsBus.
 
 ## Current readiness
 
-| Condition   | Controller                                                           | Trials | Status                                                                        |
-| ----------- | -------------------------------------------------------------------- | ------ | ----------------------------------------------------------------------------- |
-| `human`     | MolmoAct2 with operator `/subtask` updates                           | 10     | Pilot harness implemented; physical validation pending                        |
-| `planner`   | External VLM chooses text subtasks, MolmoAct2 produces actions       | 10     | PR integrated with RTC takeover fix; endpoint and physical validation pending |
-| `hybrid`    | Same VLM can choose a VLA subtask or propose a bounded direct motion | 10     | Action adapter and endpoint not commissioned; runner refuses this mode        |
-| `astra`     | Astra chooses every motion; no VLA actions                           | 10     | Action adapter and endpoint not commissioned; runner refuses this mode        |
-| `astra_icl` | Identical Astra controller plus one fixed demonstration episode      | 10     | Same blockers plus demonstration selection                                    |
+| Condition   | Controller                                                           | Trials | Status                                                                                                      |
+| ----------- | -------------------------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------- |
+| `human`     | MolmoAct2 with operator `/subtask` updates                           | 0      | Skipped for this campaign                                                                                   |
+| `planner`   | External VLM chooses text subtasks, MolmoAct2 produces actions       | 10     | PR integrated with RTC takeover fix; HF Router configured; token permission and physical validation pending |
+| `hybrid`    | Same VLM can choose a VLA subtask or propose a bounded direct motion | 10     | Action adapter and endpoint not commissioned; runner refuses this mode                                      |
+| `astra`     | Astra chooses every motion; no VLA actions                           | 10     | Action adapter and endpoint not commissioned; runner refuses this mode                                      |
+| `astra_icl` | Identical Astra controller plus one fixed demonstration episode      | 10     | Same blockers plus demonstration selection                                                                  |
 
 No physical trial has been run by this harness yet. Do not interpret a generated
 manifest or software test as a completed rollout. The pilot must establish usable
 prompt response and stable robot control before collecting the scored comparison.
 
-## First: a human-prompting pilot
+## First: a hosted-planner pilot
 
-Run on champagne from the experiment checkout using its launcher. The harness
-waits for an explicit trial and `/start`; there is no pilot duration limit.
+Experiment 1 (human prompting) is excluded. The active plan has ten trials each
+for `planner`, `hybrid`, `astra`, and `astra_icl` (40 total); only `planner` is ready
+for an attended pilot. The other three still need their action adapters.
+
+On Champagne, authenticate with a Hugging Face token with **Make calls to Inference
+Providers** permission. Never put the token in a command argument or an experiment
+log. The stored token failed with HTTP 403 during setup.
+
+```bash
+~/lerobot-yam/.venv/bin/hf auth login
+bash ~/yam-setup/test-planner.sh preflight
+bash ~/yam-setup/test-planner.sh
+```
+
+The launcher selects `Qwen/Qwen3.8-27B:novita` through
+`https://router.huggingface.co/v1`, disables thinking, uses a 512-token reply budget,
+and allows 30 seconds per API request without transport retries. It runs a saved
+three-image preflight before loading MolmoAct2 or connecting hardware. This is an
+authentication/vision check, not evidence of a successful physical rollout. Novita's
+multi-image behavior remains unverified until authentication succeeds. No fallback
+silently changes providers. Copy `test-planner.sh` from this directory to
+`~/yam-setup/` if setting up a fresh machine.
+
+When the interactive prompt appears:
 
 ```text
-/trial pilot-red-01
-/subtask Pick up the red block and place it in the green bin.
+/trial pilot-planner-01
 /start
 ```
 
-Observe the robot. If it needs a correction, use a short, concrete instruction:
+The session automatically starts external steering for **Put all colored cubes in
+the green bin.** Qwen sees the three camera images plus up to two previous
+observation/command pairs. It selects a concrete text subtask; local MolmoAct2
+produces the joint/gripper actions. Autosteering uses a ten-second query interval;
+API latency is additional. The initial action queue is held until the first plan.
+Subsequent queries run asynchronously while the current subtask continues.
+
+There is no pilot duration limit. `/stop`, `/reset`, or `/finish` ends the attempt
+and requests home. After a successful return, record the observed outcome:
 
 ```text
-/subtask Open the gripper and release the red block into the green bin.
+/score partial 2 two cubes placed; third grasp failed
 ```
 
-This is a task instruction, not a guaranteed low-level command. To stop a trial,
-use `/finish` (or `/reset`), not a natural-language "stop" prompt. Check the outcome
-before returning home: released cubes must be fully in the bin and at rest for two
-seconds; a cube still held above the bin is not complete.
+Use a new pilot ID for another attempt. A planner `done` reply or API error also
+ends the attempt and requests home; only the operator scores success. `/quit` ends
+the session and disables torque, so support the arms before quitting. Feedback
+faults can prevent a completed home return; do not count that as model failure.
 
-```text
-/finish
-# Wait for "Robot reset". Score the outcome observed before home:
-/score success 1 red cube released inside bin
+After the pilot, freeze the cube inventory and a common positive `timeout_s` in
+`~/yam-experiments/manifest.json`, then run:
+
+```bash
+bash ~/yam-setup/test-planner.sh scored
 ```
 
-Next, arrange two distinguishable cubes. Use a new pilot ID, start with one color,
-and change the instruction to the other color before grasping. Record whether it
-switches targets, the delay, and whether any queued old-task motion continues.
-Repeat the same reset layout once with an unchanged instruction as a control.
-Then pilot the full task with one explicit color subtask at a time. Pilots do not
-count toward the 50 scored trials. `/stop` returns home and keeps holding when the launcher sets
-`--interactive_stop_returns_home=true`; score the attempt afterward. `/quit` ends
-the session and disables torque, so support the arms before quitting.
-
-The new gripper damping and return recovery remain subject to physical validation.
-Do not tune gains between scored conditions. A feedback fault is an infrastructure
-interruption, not evidence that the model ignored the prompt.
+Use `/trial planner-L01` through `/trial planner-L10`, restoring the named starting
+layout between attempts. No automatic restart or scene rearrangement occurs.
 
 ## CLI and evidence
 
 ```bash
-python -m examples.yam_experiments.campaign init ~/yam-experiments --cubes red blue yellow
+python -m examples.yam_experiments.campaign init ~/yam-experiments --conditions planner hybrid astra astra_icl --cubes red blue yellow
 python -m examples.yam_experiments.run \
   --root ~/yam-experiments --launcher ~/yam-setup/rollout-molmoact2.sh \
-  --condition human --pilot
+  --condition planner --pilot \
+  --planner.model_id=Qwen/Qwen3.8-27B:novita \
+  --planner.api_base=https://router.huggingface.co/v1 --planner.api_key_env=HF_TOKEN
 ```
 
 Substitute the actual cube inventory; unique labels such as `red-1 red-2` support
@@ -76,7 +98,8 @@ A scored run requires `codex/yam-steering-experiments`, a clean revision, a froz
 cube inventory, and a common positive `timeout_s` in `manifest.json`. Pilots always
 use duration zero. Choose the scored budget after observing pilot completion times.
 
-Every session writes `events.jsonl` and a local LeRobot dataset containing the three
+Every planner session writes `planner.jsonl` (request text, raw replies, latency and errors),
+`events.jsonl` and a local LeRobot dataset containing the three
 cameras, measured joint/gripper state, dispatched actions, and the task that generated
 each action. `/subtask` timestamps record requested instructions; dataset task labels
 show when the new instruction actually reaches action dispatch. Sentry may split a
@@ -94,18 +117,16 @@ operator judgments supported by recordings, not model self-reported success.
 python -m examples.yam_experiments.campaign report ~/yam-experiments
 ```
 
-## Scored protocol: 10 layouts × 5 conditions
+## Scored protocol: 10 layouts × 4 active conditions
 
 1. Freeze the physical cube/bin inventory, cameras, home pose, calibration, gains,
    model/checkpoint revisions, API model, prompts, and time budget after pilots.
 2. Photograph and label ten starting layouts. Each layout must be physically recreated
    for every condition; use table markers and reference images, not an RNG seed alone.
-3. Follow the manifest order within each layout. It balances each condition's position
-   across the ten blocks. No automatic advance moves the robot or rearranges cubes.
-4. For `human`, predeclare allowed prompt interventions (for example, one color-specific
-   instruction per cube plus one corrective instruction after a visibly failed attempt).
-   Log every prompt. Conditions 2–5 receive no human task hints in scored trials; a
-   physical intervention ends the attempt as interrupted.
+3. Follow the manifest order within each layout. It rotates condition positions
+   across the ten blocks (four positions cannot be exactly balanced over ten layouts). No automatic advance moves the robot or rearranges cubes.
+4. Conditions 2–5 receive no human task hints in scored trials; a physical
+   intervention ends the attempt as interrupted. The human condition is excluded.
 5. Primary outcome: every cube released fully inside the green bin and stationary for
    two seconds before the trial ends. Also report cubes placed / total, completion time,
    prompt count, grasps/retries/drops, model calls/latency, interventions, and robot faults.
@@ -114,7 +135,7 @@ python -m examples.yam_experiments.campaign report ~/yam-experiments
    exploratory evidence, so retain per-layout outcomes and uncertainty rather than only
    ranking percentages.
 
-For a formal human trial, use `/trial human-L01`, `/start`, allowed `/subtask` updates,
+For a formal planner trial, use `/trial planner-L01`, `/start`,
 `/finish`, and `/score success N <notes>` after the home return. Other outcomes are
 `partial`, `failure`, and `interrupted`. A new trial requires a fresh layout reset.
 
@@ -142,9 +163,10 @@ python -m examples.yam_experiments.run \
 ```
 
 This remains a preview without `--execute`. Do not place API keys in CLI flags or
-logs. Authenticated Astra use needs the endpoint adapter; Pablo's current client is
-an OpenAI-compatible Chat Completions client designed for locally served VLMs. No
-model fallback should silently substitute for Astra.
+logs. This branch adds `api_key_env`, request timeout, and retry settings to the
+OpenAI-compatible client. For HF Router the runner resolves the stored Hub login
+into `HF_TOKEN`, without inserting the key into configuration/provenance. Authenticated
+Astra use still needs its endpoint and model ID. No model fallback substitutes for Astra.
 
 ## Direct and hybrid Astra commissioning
 
