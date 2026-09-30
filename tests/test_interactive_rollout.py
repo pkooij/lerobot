@@ -1866,3 +1866,19 @@ def test_planner_gate_opens_even_when_first_reply_holds():
     assert delivered[0].held
     assert not engine.hold_for_planner()  # an accepted reply ends the wait, even a hold
     engine.stop_autosteer()
+
+
+def test_external_planner_first_reply_cannot_release_preplanner_rtc_actions():
+    from lerobot.policies.rtc import ActionQueue
+    from lerobot.policies.rtc.configuration_rtc import RTCConfig
+
+    engine, _policy = _make_rtc_engine()
+    queue = ActionQueue(RTCConfig(enabled=True, execution_horizon=8, max_guidance_weight=1.0))
+    queue.merge(torch.zeros(4, 2), torch.zeros(4, 2), real_delay=0, task="task A")
+    engine._action_queue = queue
+    engine.external_text = lambda *a, **kw: "task B"
+    engine.start_autosteer("clear table", interval_s=5)
+    assert engine.get_action(None) is None
+    engine._apply_subtask(PolicyQuery(QueryKind.NEXT_SUBTASK, "clear table"), "task B")
+    # No task-B chunk exists yet: do not release queued task-A motion.
+    assert engine.get_action(None) is None

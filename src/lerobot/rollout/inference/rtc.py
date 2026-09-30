@@ -361,6 +361,17 @@ class RTCInferenceEngine(InferenceEngine):
     # Action production (called from main thread)
     # ------------------------------------------------------------------
 
+    def start_autosteer(self, goal: str, interval_s: float) -> None:
+        # First-plan gating must cover queued and in-flight motion as well as
+        # get_action(): nothing predicted before takeover belongs to the plan.
+        with self._query_lock:
+            super().start_autosteer(goal, interval_s)
+            if self.external_text is not None:
+                with self._obs_lock:
+                    self._reset_epoch += 1
+                    if self._action_queue is not None:
+                        self._action_queue.clear()
+
     def get_action(self, obs_frame: dict | None) -> torch.Tensor | None:
         """Pop the next action from the RTC queue (ignores ``obs_frame``)."""
         if self.hold_for_planner():
@@ -459,6 +470,12 @@ class RTCInferenceEngine(InferenceEngine):
                         epoch_before = self._reset_epoch
                     if obs is None:  # a reset mid-query dropped the observation
                         continue
+
+                if self.hold_for_planner():
+                    # Keep servicing the external query, but do not prefill the
+                    # queue from the original broad goal while the planner thinks.
+                    time.sleep(_RTC_IDLE_SLEEP_S)
+                    continue
 
                 if queue.qsize() <= self._rtc_queue_threshold:
                     try:
