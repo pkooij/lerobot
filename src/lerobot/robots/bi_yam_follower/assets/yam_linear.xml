@@ -36,6 +36,12 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
                 <body name="gripper" pos="0.0404996 0 -0.0356" quat="0 0.70711 0.70711 0">
                   <joint name="joint6" pos="0 0 0" axis="0 0 1" type="hinge" range="-2.0944 2.0944" actuatorfrcrange="-10 10" />
                   <inertial pos="-3.57066e-05 0.000249371 -0.0293133" quat="0.667981 0.744113 -0.00433092 0.00882801" mass="0.553219" diaginertia="0.000409686 0.000369758 0.000324415" />
+                  <!-- Tool sites include the linear_4310 attachment rotation, as composed by
+                       I2RT combine_arm_and_gripper at the pinned revision above. -->
+                  <frame quat="0 0.70711 0.70711 0">
+                    <site name="tcp_site" pos="0 0 0" quat="0 1 0 0" />
+                    <site name="grasp_site" pos="9.681e-05 3.8898e-05 -0.14465" quat="0 1 0 0" />
+                  </frame>
                   <body name="tip_left" pos="-0.0238981 0.0450619 -0.0545599" quat="0.499998 -0.5 -0.5 -0.500002">
                     <inertial pos="-0.0224716 0.0143408 -0.0426253" quat="0.498899 0.455348 -0.0576406 0.735143" mass="0.0710042" diaginertia="6.24193e-05 6.01079e-05 2.83591e-05" />
                     <joint name="joint7" pos="0 0 0" type="slide" axis="0 0 -1" range="0 0.0475" />

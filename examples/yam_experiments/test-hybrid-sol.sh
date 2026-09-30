@@ -6,8 +6,8 @@ export PYTHONPATH="$PWD/src:$PWD"
 uv_bin="$HOME/.local/bin/uv"
 mode="${1:-pilot}"
 case "$mode" in
-  pilot|preflight|capture|preview|api) ;;
-  *) echo 'Usage: test-hybrid-sol.sh [pilot|preflight|capture|preview|api]' >&2; exit 2 ;;
+  pilot|preflight|capture|preview|api|ik) ;;
+  *) echo 'Usage: test-hybrid-sol.sh [pilot|preflight|capture|preview|api|ik]' >&2; exit 2 ;;
 esac
 if [[ "$(git branch --show-current)" != 'codex/yam-hybrid-sol' ]]; then
   echo 'Expected codex/yam-hybrid-sol; refusing to use another branch.' >&2
@@ -18,7 +18,7 @@ if pgrep -f '[e]xamples.yam_experiments.run|[l]erobot-rollout' >/dev/null; then
   exit 1
 fi
 snapshot="$HOME/yam-setup/hybrid-sol-snapshot"
-if [[ "$mode" != capture && "$mode" != preview && -z "${OPENAI_API_KEY:-}" ]]; then
+if [[ "$mode" != capture && "$mode" != ik && "$mode" != preview && -z "${OPENAI_API_KEY:-}" ]]; then
   read -rsp 'OpenAI API key: ' OPENAI_API_KEY
   echo
   export OPENAI_API_KEY
@@ -32,6 +32,10 @@ if [[ "$mode" != preview ]]; then
     --capture-only --launcher "$HOME/yam-setup/rollout-molmoact2.sh" --snapshot "$snapshot"
 fi
 [[ "$mode" == capture ]] && exit 0
+if [[ "$mode" != preview ]]; then
+  "$uv_bin" run --no-sync python -m examples.yam_experiments.hybrid_sol --ik-only --snapshot "$snapshot"
+fi
+[[ "$mode" == ik ]] && exit 0
 if [[ "$mode" != preview ]]; then
   "$uv_bin" run --no-sync python -m examples.yam_experiments.hybrid_sol --snapshot "$snapshot"
 fi

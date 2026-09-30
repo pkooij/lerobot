@@ -10,7 +10,7 @@ All actuation continues through LeRobot's YAM adapter and Damiao MotorsBus.
 | ----------- | -------------------------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------- |
 | `human`     | MolmoAct2 with operator `/subtask` updates                           | 0      | Skipped for this campaign                                                                                   |
 | `planner`   | External VLM chooses text subtasks, MolmoAct2 produces actions       | 10     | PR integrated with RTC takeover fix; HF Router configured; token permission and physical validation pending |
-| `hybrid`    | Same VLM can choose a VLA subtask or propose a bounded direct motion | 10     | Action adapter and endpoint not commissioned; runner refuses this mode                                      |
+| `hybrid`    | Same VLM can choose a VLA subtask or propose a bounded direct motion | 10     | Sol hybrid pilot available on `codex/yam-hybrid-sol`; physical IK validation pending                        |
 | `astra`     | Astra chooses every motion; no VLA actions                           | 10     | Action adapter and endpoint not commissioned; runner refuses this mode                                      |
 | `astra_icl` | Identical Astra controller plus one fixed demonstration episode      | 10     | Same blockers plus demonstration selection                                                                  |
 
@@ -21,8 +21,8 @@ prompt response and stable robot control before collecting the scored comparison
 ## First: a hosted-planner pilot
 
 Experiment 1 (human prompting) is excluded. The active plan has ten trials each
-for `planner`, `hybrid`, `astra`, and `astra_icl` (40 total); only `planner` is ready
-for an attended pilot. The other three still need their action adapters.
+for `planner`, `hybrid`, `astra`, and `astra_icl` (40 total). Planner and Sol hybrid
+launchers are available for attended pilots; direct-only conditions remain unimplemented.
 
 On Champagne, authenticate with a Hugging Face token with **Make calls to Inference
 Providers** permission. Never put the token in a command argument or an experiment
@@ -259,14 +259,30 @@ Sol completion also requests home. A fault can prevent a completed return.
 
 MolmoAct2 uses RTC and the existing normalization/cameras/gripper calibration.
 Sol reviews after five seconds of policy execution and after each correction;
-the robot holds during the API call. For this first pilot only **gripper** corrections
-are enabled (absolute 0 closed, 1 open, at most 2 strokes/s). Joint corrections have
-`max_delta=0`; arm directions and collision clearance must be commissioned before
-expanding that contract. Policy joint motion retains the existing driver limits.
-The supervisor accepts `policy`, `intervention`, `hold`, or `done`; every accepted
+the robot holds during the API call. Gripper corrections use absolute 0 closed, 1 open,
+at most 2 strokes/s. End-effector corrections use the bounded IK contract below;
+raw arm-joint proposals are rejected. Policy motion retains the existing driver limits.
+The supervisor accepts `policy`, `intervention`, `end_effector`, `hold`, or `done`; every accepted
 decision appears in the terminal and is saved with the raw reply and API latency.
 The robot waits for the next review before returning from a direct correction to the VLA.
 
 This is the `hybrid` condition, distinct from the planner-only experiment. Pilot
 attempts do not count toward the ten formal trials. Freeze the model, action contract,
 layouts, cube inventory and common time budget before collecting scored comparisons.
+
+### Sol end-effector pilot
+
+On `codex/yam-hybrid-sol`, the hybrid supervisor now permits `end_effector` decisions in addition to policy subtasks and gripper corrections. It supplies FK from I2RT's YAM v1 + linear_4310 grasp site, including the gripper attachment rotation. Positions are metres in each arm's own model base frame and orientations are unit wxyz quaternions. Base +Z is up for the upright mounting; at the zero pose the tool's +Z points along base +X. Camera-to-base and inter-arm transforms are not calibrated: do not treat image coordinates as base coordinates.
+
+The local solver converts a pose correction to canonical joint radians. Corrections are one arm at a time, at most 3 cm / 0.15 rad, 3 cm/s / 0.15 rad/s, 0.25 rad per joint and 0.2 rad/s per joint. Grippers remain continuous 0 closed / 1 open. No normalization is applied to IK actions; they pass through the same robot processor and Damiao driver guards as before. Unreachable targets, excessive paths, expired replies and missed FK targets end the segment. This does not provide collision checking or preview future Molmo chunks.
+
+```bash
+# Fresh read-only capture and local FK/IK checks; no API key or motor commands:
+bash ~/yam-setup/test-hybrid-sol.sh ik
+# Fresh capture + local IK + Sol decision validation, without executing it:
+bash ~/yam-setup/test-hybrid-sol.sh preflight
+# Same checks, then interactive Molmo RTC + Sol pilot; wait for /start:
+bash ~/yam-setup/test-hybrid-sol.sh
+```
+
+Use `/trial pilot-sol-ee-01` and `/start`. `/stop` requests home and holds. The FK/IK check verifies model consistency near measured positions; it is not a physical tool-frame calibration. Inspect the first correction with clear space around the arms. Results are saved to `~/yam-setup/hybrid-sol-snapshot/ik-check.json`; planner decisions and executed native joint actions are recorded in the session evidence.

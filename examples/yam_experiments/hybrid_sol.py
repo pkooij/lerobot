@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import os
 import time
 from dataclasses import asdict
@@ -12,19 +13,23 @@ from .run import launcher_arguments
 
 
 def hybrid_config():
+    from lerobot.robots.bi_yam_follower import bi_yam_follower
     from lerobot.robots.bi_yam_follower.config_bi_yam_follower import JOINT_LIMITS, JOINT_NAMES
+    from lerobot.rollout.end_effector import EndEffectorConfig
     from lerobot.rollout.hybrid import HybridConfig, InterventionLimit
 
     limits = {}
+    end_effectors = {}
+    model_path = str(Path(bi_yam_follower.__file__).parent / "assets/yam_linear.xml")
     for side in ("left", "right"):
         for name, (lower, upper) in zip(JOINT_NAMES, JOINT_LIMITS, strict=True):
             limits[f"{side}_{name}.pos"] = InterventionLimit(
                 lower,
                 upper,
-                0.0,
-                0.1,
+                0.25,
+                0.2,
                 0.04,
-                "Measured absolute joint angle in radians. Direct correction disabled (max_delta=0); use the VLA.",
+                "Canonical YAM joint radians. Raw joint corrections forbidden; use end_effector mode or the VLA.",
             )
         limits[f"{side}_gripper.pos"] = InterventionLimit(
             0,
@@ -34,7 +39,23 @@ def hybrid_config():
             0.08,
             f"{side} gripper measured normalized opening, 0 closed and 1 fully open. Continuous linear calibrated mapping.",
         )
-    return HybridConfig(limits=limits, policy_window_s=5, review_timeout_s=60)
+        end_effectors[side] = EndEffectorConfig(
+            model_path=model_path,
+            site="grasp_site",
+            joint_names=[f"joint{i + 1}" for i in range(6)],
+            action_keys=[f"{side}_{name}.pos" for name in JOINT_NAMES],
+            frame_description=(
+                f"{side} YAM v1 arm's own fixed base/model frame; metres, quaternion wxyz. "
+                "Base +Z is up for the upright mounting. X/Y are native model axes, NOT image right/left. "
+                "No camera-to-base or inter-arm transform is calibrated. The I2RT linear_4310 grasp_site "
+                "is the midpoint of the fingertips, independent of opening, 0.14465 m along gripper-body -Z. "
+                "Its local +Z points from the wrist toward the fingertips. Use measured FK as the reference; "
+                "do not guess table coordinates from pixels."
+            ),
+            position_tolerance_m=0.003,
+            rotation_tolerance_rad=0.025,
+        )
+    return HybridConfig(limits=limits, end_effectors=end_effectors, policy_window_s=5, review_timeout_s=60)
 
 
 def planner_config(log_path):
@@ -100,6 +121,56 @@ def capture(launcher: Path, destination: Path):
             robot.disconnect()
 
 
+def checked_pose(config, pose):
+    result = {}
+    for key, limit in config.limits.items():
+        value = float(pose[key])
+        if (
+            not math.isfinite(value)
+            or not limit.minimum - limit.tolerance <= value <= limit.maximum + limit.tolerance
+        ):
+            raise ValueError(f"Measured position outside feedback tolerance: {key}")
+        result[key] = max(limit.minimum, min(limit.maximum, value))
+    return result
+
+
+def ik_check(config, pose):
+    """No robot calls: verify local FK/IK round trips near the measured state."""
+    import numpy as np
+
+    from lerobot.rollout.end_effector import EndEffectorKinematics, parse_pose
+    from lerobot.rollout.hybrid import PlannerDecision
+
+    pose = checked_pose(config, pose)
+    result = {}
+    for name, ee in config.end_effectors.items():
+        solver = EndEffectorKinematics(ee)
+        current = solver.forward(pose)
+        checks = []
+        for key in ee.action_keys:
+            changed = dict(pose)
+            changed[key] += 0.01 if pose[key] + 0.01 <= config.limits[key].maximum else -0.01
+            target = solver.forward(changed)
+            decision = PlannerDecision(
+                "end_effector", "Local IK check", "No execution", "", {}, 2, {name: target}
+            )
+            started = time.monotonic()
+            solved = decision.resolve_motion(config, pose, {name: solver})
+            elapsed_ms = (time.monotonic() - started) * 1000
+            desired_p, desired_r = parse_pose(target)
+            solved_p, solved_r = parse_pose(solver.forward(solved))
+            checks.append(
+                {
+                    "joint_probe": key,
+                    "position_error_m": float(np.linalg.norm(desired_p - solved_p)),
+                    "rotation_error_rad": float((desired_r * solved_r.inv()).magnitude()),
+                    "solve_ms": round(elapsed_ms, 2),
+                }
+            )
+        result[name] = {"measured_fk": current, "round_trips": checks}
+    return {"end_effectors": result, "executed": False, "physical_frame_calibration_verified": False}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", type=Path)
@@ -107,6 +178,7 @@ def main():
     parser.add_argument("--capture-only", action="store_true")
     parser.add_argument("--flags", action="store_true")
     parser.add_argument("--api-only", action="store_true")
+    parser.add_argument("--ik-only", action="store_true")
     args = parser.parse_args()
     config = hybrid_config()
     if args.flags:
@@ -123,6 +195,12 @@ def main():
         except Exception as exc:
             print(f"Read-only hardware check failed: {exc}")
             raise SystemExit(1) from None
+        return
+    if args.ik_only:
+        saved = json.loads((args.snapshot / "pose.json").read_text())
+        report = ik_check(config, saved["pose"])
+        (args.snapshot / "ik-check.json").write_text(json.dumps(report, indent=2))
+        print(json.dumps(report, indent=2))
         return
     if not os.environ.get("OPENAI_API_KEY"):
         parser.error("Set OPENAI_API_KEY in this terminal; do not put it in CLI flags")
@@ -162,7 +240,7 @@ def main():
         )
         return
     saved = json.loads((args.snapshot / "pose.json").read_text())
-    obs = dict(saved["pose"])
+    obs = checked_pose(config, saved["pose"])
     for name in ("top", "left", "right"):
         obs[name] = np.array(Image.open(args.snapshot / f"current_{name}.png").convert("RGB"))
     planner = HybridPlanner(
@@ -170,13 +248,15 @@ def main():
     )
     started = time.monotonic()
     proposal = planner(obs, PolicyQuery(QueryKind.NEXT_SUBTASK, TASK), TASK)
-    if proposal.mode == "intervention":
-        proposal.validate_motion(config, saved["pose"])
+    resolved = None
+    if proposal.mode in {"intervention", "end_effector"}:
+        resolved = proposal.resolve_motion(config, checked_pose(config, saved["pose"]), planner.kinematics)
     print(
         json.dumps(
             {
                 "model": "gpt-6.1-sol",
                 "decision": asdict(proposal),
+                "resolved_joint_targets": resolved,
                 "latency_s": round(time.monotonic() - started, 2),
                 "snapshot_age_s": round(time.time() - saved["captured_at"], 2),
                 "executed": False,
