@@ -106,6 +106,7 @@ def main():
     parser.add_argument("--launcher", type=Path)
     parser.add_argument("--capture-only", action="store_true")
     parser.add_argument("--flags", action="store_true")
+    parser.add_argument("--api-only", action="store_true")
     args = parser.parse_args()
     config = hybrid_config()
     if args.flags:
@@ -117,7 +118,11 @@ def main():
     if args.capture_only:
         if args.launcher is None:
             parser.error("--launcher is required for capture")
-        capture(args.launcher, args.snapshot)
+        try:
+            capture(args.launcher, args.snapshot)
+        except Exception as exc:
+            print(f"Read-only hardware check failed: {exc}")
+            raise SystemExit(1) from None
         return
     if not os.environ.get("OPENAI_API_KEY"):
         parser.error("Set OPENAI_API_KEY in this terminal; do not put it in CLI flags")
@@ -127,6 +132,35 @@ def main():
     from lerobot.rollout.hybrid import HybridPlanner
     from lerobot.rollout.inference import PolicyQuery, QueryKind
 
+    if args.api_only:
+        from lerobot.rollout.planner import VlmPlanner
+
+        obs = {
+            name: np.array(Image.open(args.snapshot / f"current_{name}.png").convert("RGB"))
+            for name in ("top", "left", "right")
+        }
+        planner = VlmPlanner(planner_config(args.snapshot / "sol-api-check.jsonl"), "bi_yam_follower")
+        answer = planner(
+            obs,
+            PolicyQuery(
+                QueryKind.VQA,
+                "These are archived camera frames, not a live robot. Briefly describe visible cubes and the bin in each view. Reply as JSON with an answer field.",
+            ),
+            TASK,
+        )
+        print(
+            json.dumps(
+                {
+                    "model": "gpt-6.1-sol",
+                    "answer": answer,
+                    "archived_frames": str(args.snapshot),
+                    "robot_connected": False,
+                    "executed": False,
+                },
+                indent=2,
+            )
+        )
+        return
     saved = json.loads((args.snapshot / "pose.json").read_text())
     obs = dict(saved["pose"])
     for name in ("top", "left", "right"):

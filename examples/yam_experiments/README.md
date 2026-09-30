@@ -242,6 +242,7 @@ The separate `codex/yam-hybrid-sol` branch combines the YAM experiment harness w
 On Champagne it uses `~/lerobot-yam-hybrid`, leaving the Qwen checkout available.
 
 ```bash
+bash ~/yam-setup/test-hybrid-sol.sh api  # API access only, using archived camera frames
 bash ~/yam-setup/test-hybrid-sol.sh preflight
 bash ~/yam-setup/test-hybrid-sol.sh
 ```

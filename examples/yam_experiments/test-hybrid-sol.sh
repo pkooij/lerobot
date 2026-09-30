@@ -6,8 +6,8 @@ export PYTHONPATH="$PWD/src:$PWD"
 uv_bin="$HOME/.local/bin/uv"
 mode="${1:-pilot}"
 case "$mode" in
-  pilot|preflight|capture|preview) ;;
-  *) echo 'Usage: test-hybrid-sol.sh [pilot|preflight|capture|preview]' >&2; exit 2 ;;
+  pilot|preflight|capture|preview|api) ;;
+  *) echo 'Usage: test-hybrid-sol.sh [pilot|preflight|capture|preview|api]' >&2; exit 2 ;;
 esac
 if [[ "$(git branch --show-current)" != 'codex/yam-hybrid-sol' ]]; then
   echo 'Expected codex/yam-hybrid-sol; refusing to use another branch.' >&2
@@ -22,6 +22,10 @@ if [[ "$mode" != capture && "$mode" != preview && -z "${OPENAI_API_KEY:-}" ]]; t
   read -rsp 'OpenAI API key: ' OPENAI_API_KEY
   echo
   export OPENAI_API_KEY
+fi
+if [[ "$mode" == api ]]; then
+  exec "$uv_bin" run --no-sync python -m examples.yam_experiments.hybrid_sol \
+    --api-only --snapshot "$HOME/yam-setup/camera-recheck-20260930"
 fi
 if [[ "$mode" != preview ]]; then
   "$uv_bin" run --no-sync python -m examples.yam_experiments.hybrid_sol \
