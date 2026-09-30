@@ -587,7 +587,10 @@ class BiYamFollower(Robot):
                 for i, name in enumerate(MOTOR_NAMES)
             }
         for name, camera in self.cameras.items():
-            result[name] = camera.async_read()
+            # Interpolated commands can run faster than the camera. Reuse its
+            # newest frame without waiting for another exposure, but never accept
+            # a stalled stream indefinitely. Motor feedback is checked above.
+            result[name] = camera.read_latest(max_age_ms=200)
         return result
 
     @check_if_not_connected

@@ -61,6 +61,10 @@ class PolicyQuery:
     """External planner observations paired with commands accepted by the engine."""
 
 
+class PlannerCompleted(Exception):  # noqa: N818 - successful control-flow signal, not an error
+    """A planner completed its goal; no further subtask should be dispatched."""
+
+
 @dataclass(frozen=True)
 class QueryAnswer:
     """Result of a policy text query.
@@ -73,6 +77,8 @@ class QueryAnswer:
     answer: str | None = None
     error: str | None = None
     kind: QueryKind = QueryKind.VQA
+    completed: bool = False
+    """The planner finished its goal; answer is a status, not a robot instruction."""
     held: bool = False
     """A NEXT_SUBTASK answer that repeated the current instruction: nothing was sent."""
 
@@ -389,6 +395,8 @@ class InferenceEngine(abc.ABC):
             if not isinstance(text, str) or not text.strip():
                 raise TypeError(f"generate_text() must return a non-empty str, got {text!r}")
             answer = QueryAnswer(question=query.text, answer=text.strip(), kind=query.kind)
+        except PlannerCompleted:
+            answer = QueryAnswer(question=query.text, answer="done", kind=query.kind, completed=True)
         except Exception as e:
             logger.exception("Policy text query failed (%s) for %r", query.kind.value, query.text)
             answer = QueryAnswer(question=query.text, error=f"{type(e).__name__}: {e}", kind=query.kind)
@@ -398,7 +406,12 @@ class InferenceEngine(abc.ABC):
             if epoch is not None and epoch != self._query_epoch:
                 self._query_in_flight = False
                 return
-            if query.kind is QueryKind.NEXT_SUBTASK:
+            if query.kind is QueryKind.NEXT_SUBTASK and answer.completed:
+                if self._autosteer_goal != query.text:
+                    self._query_in_flight = False
+                    return
+                self._autosteer_goal = None
+            elif query.kind is QueryKind.NEXT_SUBTASK:
                 subtask = answer.answer
                 if subtask is not None:
                     changed = self._apply_subtask(query, subtask)

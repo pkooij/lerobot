@@ -39,6 +39,7 @@ from lerobot.processor import RenderRuntimeMessagesStep
 from lerobot.utils.constants import MESSAGES_RENDERED, QUERY_KIND, QUERY_TEXT
 
 from .inference import EXTERNAL_HISTORY_DEFAULT, PolicyQuery, QueryKind
+from .inference.base import PlannerCompleted
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,9 @@ class VlmPlanner:
         try:
             reply = self.client.generate_json([messages])[0]
             text = self.parse_reply(reply, query, task)
+        except PlannerCompleted:
+            self._log_exchange(query, task, started, reply=reply, returned="done", error=None)
+            raise
         except Exception as e:
             self._log_exchange(query, task, started, reply=reply, returned=None, error=e)
             raise

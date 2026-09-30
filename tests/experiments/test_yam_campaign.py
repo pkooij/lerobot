@@ -179,3 +179,20 @@ def test_hosted_planner_flags_allow_token_budget_but_not_secret(tmp_path):
     assert "--planner.api_key_env=HF_TOKEN" in flags
     assert "--planner.max_new_tokens=512" in flags
     assert f"--planner.log_path={tmp_path / 'planner.jsonl'}" in flags
+
+
+def test_planner_completion_requests_home_and_operator_verdict(tmp_path, monkeypatch):
+    from lerobot.rollout.inference import QueryAnswer, QueryKind
+
+    obj = session(tmp_path)
+    obj.condition = "planner"
+    obj.trial = "planner-L01"
+    monkeypatch.setattr("lerobot.rollout.interactive.InteractiveSession._on_event", lambda *args: None)
+    obj._on_event(
+        RolloutEvent.QUERY_ANSWERED,
+        QueryAnswer(question="goal", answer="done", kind=QueryKind.NEXT_SUBTASK, completed=True),
+    )
+    obj.controller.reset.assert_called_once()
+    assert obj._awaiting_verdict
+    record = json.loads(obj.journal.path.read_text().splitlines()[-1])
+    assert record["reason"] == "planner_completed"

@@ -179,10 +179,14 @@ class ExperimentSession(InteractiveSession):
             elif (
                 event is RolloutEvent.QUERY_ANSWERED
                 and payload is not None
-                and not payload.ok
+                and (getattr(payload, "completed", False) or not payload.ok)
                 and self.condition == "planner"
             ):
-                self.journal.write("planner_trial_stop", trial_id=self.trial, reason=payload.error)
+                self.journal.write(
+                    "planner_trial_stop",
+                    trial_id=self.trial,
+                    reason="planner_completed" if getattr(payload, "completed", False) else payload.error,
+                )
                 self._awaiting_verdict = True
                 self.controller.reset()
             elif event is RolloutEvent.RESET_DONE:

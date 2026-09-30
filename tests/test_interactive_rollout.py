@@ -1908,3 +1908,40 @@ def test_stop_can_return_home_without_disconnecting_then_restart():
             session._handle_line("/quit")
             _join_session(thread)
         assert session.controller.stopped
+
+
+def test_planner_completion_is_status_not_error_or_robot_instruction(caplog):
+    from lerobot.rollout.inference.base import PlannerCompleted
+
+    engine = _FakeEngine()
+    original_task = engine.task
+    engine.text_error = PlannerCompleted()
+    delivered = []
+    engine.set_answer_observer(delivered.append)
+    engine.start_autosteer("tidy the table", interval_s=0)
+    engine.pump_query({"joint.pos": 0.0})
+    assert engine.autosteer_goal is None
+    assert engine.task == original_task
+    assert len(delivered) == 1
+    assert delivered[0].ok and delivered[0].completed
+    assert delivered[0].answer == "done"
+    assert "Policy text query failed" not in caplog.text
+    engine.pump_query({"joint.pos": 0.0})
+    assert len(engine.seen_queries) == 1
+
+
+def test_cancelled_planner_completion_is_not_published():
+    from lerobot.rollout.inference.base import PlannerCompleted
+
+    engine = _FakeEngine()
+    delivered = []
+    engine.set_answer_observer(delivered.append)
+    engine.start_autosteer("tidy", interval_s=0)
+    epoch = engine._query_epoch
+    engine.stop_autosteer()
+
+    def finish(*args):
+        raise PlannerCompleted()
+
+    engine._resolve_query(PolicyQuery(QueryKind.NEXT_SUBTASK, "tidy"), {}, finish, epoch=epoch)
+    assert not delivered

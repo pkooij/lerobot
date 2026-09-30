@@ -148,7 +148,7 @@ RTC takeover issue demonstrated by
 in-flight actions from before planner takeover must be discarded, and RTC must not
 prefill actions from the broad goal while waiting for its first plan.
 
-The harness translates a planner `done` response into a stopped trial followed by
+The harness translates a planner `done` response into a normal completion status, a stopped trial followed by
 home and operator scoring. Planner errors also request a reset. The original PR
 holds the current task on `done`; this is not sufficient for experiment termination.
 These changes do not claim a full upstream review or successful physical planning.
@@ -224,3 +224,13 @@ and latency even while normal INFO logs are muted. The selected instruction prin
 separately, since an in-progress proposal can be held. Rejected and `done` replies
 are retained in `planner.jsonl`. These scene assessments are model claims, not
 operator-verified outcomes. The same contract runs in the saved-image preflight.
+
+Planner completion is a successful query status, not a traceback or an automatically
+successful trial. It stops autosteering, requests home, and waits for the operator
+verdict. Genuine query failures still report errors.
+
+YAM observation reads use the latest camera frame with a 200 ms freshness limit.
+This allows 60 Hz interpolated commands between 30 fps camera exposures instead of
+waiting for a new exposure on every tick. The motor feedback deadline is unchanged.
+A stalled camera still raises an error; actual achieved cadence must be checked in
+the next physical run's summary.

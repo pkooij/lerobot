@@ -818,3 +818,32 @@ def test_invalid_home_target_cannot_trigger_feedback_recovery(monkeypatch, tmp_p
     with pytest.raises(ValueError):
         bot.return_to_position(target)
     recover.assert_not_called()
+
+
+def test_observation_reuses_recent_camera_frame_and_rejects_stale(monkeypatch, tmp_path):
+    import threading
+    import time
+
+    from lerobot.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
+
+    bot, _ = robot(monkeypatch, tmp_path)
+    bot.connect()
+    camera = OpenCVCamera(OpenCVCameraConfig(index_or_path=0))
+    import cv2
+
+    camera.videocapture = MagicMock(spec=cv2.VideoCapture)
+    camera.thread = MagicMock()
+    camera.thread.is_alive.return_value = True
+    camera.latest_frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    camera.latest_timestamp = time.perf_counter()
+    camera.new_frame_event = threading.Event()  # No new frame to consume.
+    bot.cameras["top"] = camera
+    try:
+        assert bot.get_observation()["top"] is camera.latest_frame
+        assert bot.get_observation()["top"] is camera.latest_frame
+        camera.latest_timestamp = time.perf_counter() - 0.3
+        with pytest.raises(TimeoutError, match="too old"):
+            bot.get_observation()
+    finally:
+        bot.cameras.clear()
+        bot.disconnect()

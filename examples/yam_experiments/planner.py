@@ -1,10 +1,11 @@
 """Cube-by-cube planning and visible diagnostics for the YAM experiment."""
 
 from lerobot.rollout.inference import QueryKind
+from lerobot.rollout.inference.base import PlannerCompleted
 from lerobot.rollout.planner import VlmPlanner, normalize_instruction
 
 
-class PlannerFinishedError(RuntimeError):
+class PlannerFinishedError(PlannerCompleted):
     """End the attempt for operator scoring when the planner reports completion."""
 
 
