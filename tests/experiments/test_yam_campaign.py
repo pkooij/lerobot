@@ -42,6 +42,7 @@ def test_run_keeps_hardware_flags_and_enforces_recording(tmp_path):
     assert "--robot.defer_torque_enable=true" in argv
     assert "--strategy.type=sentry" in argv
     assert "--dataset.push_to_hub=false" in argv
+    assert "--dataset.repo_id=local/rollout_yam_experiment" in argv
     with pytest.raises(ValueError, match="credentials"):
         prepare_arguments([], ["--planner.api_key=example"], tmp_path, "task", 0)
 

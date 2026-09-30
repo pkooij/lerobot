@@ -48,7 +48,7 @@ def prepare_arguments(
             "robot.defer_torque_enable": "true",
             "return_to_initial_position": "true",
             "strategy.type": "sentry",
-            "dataset.repo_id": "local/yam-experiment",
+            "dataset.repo_id": "local/rollout_yam_experiment",
             "dataset.root": str(session_dir / "dataset"),
             "dataset.single_task": task,
             "dataset.push_to_hub": "false",
