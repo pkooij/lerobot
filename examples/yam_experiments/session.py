@@ -142,7 +142,12 @@ class ExperimentSession(InteractiveSession):
         with self._trial_lock:
             self.journal.write("operator_command", trial_id=self.trial, command=line)
             cmd = parse_command(line)
-            if cmd and cmd.name == "reset" and self.trial and self._started_at is not None:
+            if (
+                cmd
+                and (cmd.name == "reset" or (cmd.name == "stop" and self._stop_returns_home))
+                and self.trial
+                and self._started_at is not None
+            ):
                 self._cmd_finish(cmd)
                 return
             if cmd and cmd.name in {"subtask", "vqa", "autosteer"} and self.condition != "human":

@@ -51,7 +51,9 @@ and change the instruction to the other color before grasping. Record whether it
 switches targets, the delay, and whether any queued old-task motion continues.
 Repeat the same reset layout once with an unchanged instruction as a control.
 Then pilot the full task with one explicit color subtask at a time. Pilots do not
-count toward the 50 scored trials. `/stop` returns home and ends the session.
+count toward the 50 scored trials. `/stop` returns home and keeps holding when the launcher sets
+`--interactive_stop_returns_home=true`; score the attempt afterward. `/quit` ends
+the session and disables torque, so support the arms before quitting.
 
 The new gripper damping and return recovery remain subject to physical validation.
 Do not tune gains between scored conditions. A feedback fault is an infrastructure

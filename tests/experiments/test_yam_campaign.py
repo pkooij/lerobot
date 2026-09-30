@@ -133,3 +133,15 @@ def test_unscored_fault_is_visible_and_blocks_success_percentage(tmp_path):
     assert result["attempted"] == 2
     assert result["unscored_attempts"] == ["human-L02"]
     assert result["success_rate"] is None
+
+
+def test_stop_in_hold_mode_finishes_trial_before_scoring(tmp_path):
+    obj = session(tmp_path)
+    obj._stop_returns_home = True
+    obj._cmd_trial(InteractiveCommand("trial", "human-L01"))
+    obj._started_at = 1.0
+    obj._handle_line("/stop")
+    obj.controller.reset.assert_called_once()
+    obj.controller.stop.assert_not_called()
+    assert obj._awaiting_verdict
+    assert not obj._home_ready
