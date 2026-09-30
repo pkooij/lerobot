@@ -216,7 +216,7 @@ class InteractiveSession:
         """Render a resolved text query (an operator question or an autosteer turn)."""
         if answer.kind is QueryKind.NEXT_SUBTASK:
             if answer.completed:
-                self._print("Planner reports the goal complete.")
+                self._print(f"Planner completed the goal: {answer.answer}")
             elif answer.ok and answer.held:
                 self._print(f"Autosteer holds {answer.answer!r} — nothing sent to the policy")
             elif answer.ok:

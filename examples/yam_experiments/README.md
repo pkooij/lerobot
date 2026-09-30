@@ -234,3 +234,38 @@ This allows 60 Hz interpolated commands between 30 fps camera exposures instead 
 waiting for a new exposure on every tick. The motor feedback deadline is unchanged.
 A stalled camera still raises an error; actual achieved cadence must be checked in
 the next physical run's summary.
+
+## Sol hybrid pilot
+
+The separate `codex/yam-hybrid-sol` branch combines the YAM experiment harness with
+[the hybrid supervisor stacked on Pablo's PR](https://github.com/huggingface/lerobot/pull/4823).
+On Champagne it uses `~/lerobot-yam-hybrid`, leaving the Qwen checkout available.
+
+```bash
+bash ~/yam-setup/test-hybrid-sol.sh preflight
+bash ~/yam-setup/test-hybrid-sol.sh
+```
+
+Set `OPENAI_API_KEY` in that terminal, or enter it at the hidden prompt. Preflight
+captures the three cameras and calibrated joint state using `read_only=true`, then
+asks `gpt-6.1-sol` for one decision without executing it. A successful preflight
+checks endpoint/schema access, not physical performance. `preview` prints launch
+arguments without API calls or hardware; `capture` takes only the read-only snapshot.
+
+The launch remains interactive: `/trial pilot-sol-hybrid-01`, then `/start`.
+Use `/finish` to return home, then `/score success|partial|failure|interrupted <count> <notes>`.
+Sol completion also requests home. A fault can prevent a completed return.
+
+MolmoAct2 uses RTC and the existing normalization/cameras/gripper calibration.
+Sol reviews after five seconds of policy execution and after each correction;
+the robot holds during the API call. For this first pilot only **gripper** corrections
+are enabled (absolute 0 closed, 1 open, at most 2 strokes/s). Joint corrections have
+`max_delta=0`; arm directions and collision clearance must be commissioned before
+expanding that contract. Policy joint motion retains the existing driver limits.
+The supervisor accepts `policy`, `intervention`, `hold`, or `done`; every accepted
+decision appears in the terminal and is saved with the raw reply and API latency.
+The robot waits for the next review before returning from a direct correction to the VLA.
+
+This is the `hybrid` condition, distinct from the planner-only experiment. Pilot
+attempts do not count toward the ten formal trials. Freeze the model, action contract,
+layouts, cube inventory and common time budget before collecting scored comparisons.

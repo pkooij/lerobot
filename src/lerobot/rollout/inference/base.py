@@ -34,6 +34,7 @@ from threading import Lock, RLock, Thread
 
 import torch
 
+from lerobot.utils.action_interpolator import ActionInterpolator
 from lerobot.utils.constants import QUERY_KIND, QUERY_TEXT
 
 logger = logging.getLogger(__name__)
@@ -146,7 +147,7 @@ class InferenceEngine(abc.ABC):
         # Answers awaiting delivery; a queue so an undelivered one is never overwritten.
         self._ready_answers: deque[QueryAnswer] = deque()
         self._answer_observer: Callable[[QueryAnswer], None] | None = None
-        self.external_text: Callable[..., str] | None = None
+        self.external_text: Callable[..., object] | None = None
         # this engine fills the pairs, planner.history only sets how many it keeps
         self.external_history: deque[tuple[dict, str]] = deque(maxlen=EXTERNAL_HISTORY_DEFAULT)
 
@@ -546,6 +547,14 @@ class InferenceEngine(abc.ABC):
     @abc.abstractmethod
     def get_action(self, obs_frame: dict | None) -> torch.Tensor | None:
         """Return the next action tensor, or ``None`` if unavailable."""
+
+    control_interpolator: ActionInterpolator | None = None
+    interpolates_actions: bool = False
+    terminal: bool = False
+
+    def discard_actions(self) -> None:
+        """Invalidate queued/in-flight actions before an external intervention."""
+        raise NotImplementedError(f"{type(self).__name__} cannot safely discard actions")
 
     def notify_observation(self, obs: dict) -> None:  # noqa: B027
         """Publish the latest processed observation.  Default: no-op."""

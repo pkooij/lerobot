@@ -77,7 +77,7 @@ def main():
     )
     args, extra = parser.parse_known_args()
     manifest = json.loads((args.root / "manifest.json").read_text())
-    if args.condition not in {"human", "planner"}:
+    if args.condition not in {"human", "planner", "hybrid"}:
         parser.error(
             "Direct/hybrid Astra motion is not commissioned yet: configure the endpoint and validate its action adapter first."
         )
@@ -87,7 +87,11 @@ def main():
         parser.error("After pilots, freeze cube labels and a common positive timeout_s in manifest.json")
     if args.condition == "human" and any(x.startswith("--planner.") for x in extra):
         parser.error("The human condition must not have an external planner")
-    if args.condition == "planner" and not any(x.startswith("--planner.model_id=") for x in extra):
+    if args.condition == "hybrid" and not any(x.startswith("--hybrid=") for x in extra):
+        parser.error("Hybrid pilot requires explicit --hybrid action contract")
+    if args.condition in {"planner", "hybrid"} and not any(
+        x.startswith("--planner.model_id=") for x in extra
+    ):
         parser.error("Planner condition requires explicit --planner.model_id and endpoint settings")
     session_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ") + "-" + args.condition
     session_dir = args.root.resolve() / "sessions" / session_id
@@ -109,8 +113,11 @@ def main():
     if git is None:
         parser.error("git is required for experiment provenance")
     branch = subprocess.check_output([git, "branch", "--show-current"], text=True).strip()
-    if branch != "codex/yam-steering-experiments":
-        parser.error("Switch to codex/yam-steering-experiments before connecting")
+    expected_branch = (
+        "codex/yam-hybrid-sol" if args.condition == "hybrid" else "codex/yam-steering-experiments"
+    )
+    if branch != expected_branch:
+        parser.error(f"Switch to {expected_branch} before connecting")
     session_dir.mkdir(parents=True, exist_ok=False)
     journal = Journal(session_dir / "events.jsonl")
     head = subprocess.check_output([git, "rev-parse", "HEAD"], text=True).strip()
@@ -144,7 +151,8 @@ def main():
     original_planner = context.VlmPlanner
     original_session = lerobot_rollout.InteractiveSession
     try:
-        context.VlmPlanner = CubePlanner
+        if args.condition == "planner":
+            context.VlmPlanner = CubePlanner
         lerobot_rollout.InteractiveSession = partial(
             ExperimentSession,
             journal=journal,

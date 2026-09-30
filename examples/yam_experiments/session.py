@@ -169,7 +169,7 @@ class ExperimentSession(InteractiveSession):
                 payload=vars(payload) if payload else None,
             )
             if event is RolloutEvent.SEGMENT_STARTED:
-                if self.condition == "planner":
+                if self.condition in {"planner", "hybrid"}:
                     self.controller.autosteer(self.manifest["task"])
                 self._started_at = time.monotonic()
                 self._home_ready = False
@@ -180,7 +180,7 @@ class ExperimentSession(InteractiveSession):
                 event is RolloutEvent.QUERY_ANSWERED
                 and payload is not None
                 and (getattr(payload, "completed", False) or not payload.ok)
-                and self.condition == "planner"
+                and self.condition in {"planner", "hybrid"}
             ):
                 self.journal.write(
                     "planner_trial_stop",
