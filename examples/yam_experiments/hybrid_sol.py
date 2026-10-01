@@ -5,7 +5,7 @@ import json
 import math
 import os
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from .campaign import CUBE_INSTRUCTIONS, TASK
@@ -55,7 +55,14 @@ def hybrid_config():
             position_tolerance_m=0.003,
             rotation_tolerance_rad=0.025,
         )
-    return HybridConfig(limits=limits, end_effectors=end_effectors, policy_window_s=5, review_timeout_s=60)
+    return HybridConfig(
+        limits=limits,
+        end_effectors=end_effectors,
+        review_policy_chunks=True,
+        proposal_execution_steps=15,
+        policy_window_s=5,
+        review_timeout_s=60,
+    )
 
 
 def planner_config(log_path):
@@ -245,7 +252,10 @@ def main():
     for name in ("top", "left", "right"):
         obs[name] = np.array(Image.open(args.snapshot / f"current_{name}.png").convert("RGB"))
     planner = HybridPlanner(
-        planner_config(args.snapshot / "sol-preflight.jsonl"), "bi_yam_follower", hybrid=config
+        planner_config(args.snapshot / "sol-preflight.jsonl"),
+        "bi_yam_follower",
+        # This lightweight preflight has no loaded VLA. Live rollout reviews actual chunks.
+        hybrid=replace(config, review_policy_chunks=False),
     )
     started = time.monotonic()
     proposal = planner(obs, PolicyQuery(QueryKind.NEXT_SUBTASK, TASK), TASK)
@@ -260,6 +270,7 @@ def main():
                 "resolved_joint_targets": resolved,
                 "latency_s": round(time.monotonic() - started, 2),
                 "snapshot_age_s": round(time.time() - saved["captured_at"], 2),
+                "policy_proposal_reviewed": False,
                 "executed": False,
             },
             indent=2,

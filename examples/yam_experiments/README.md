@@ -260,7 +260,13 @@ Use `/finish` to return home, then `/score success|partial|failure|interrupted <
 Sol completion also requests home. A fault can prevent a completed return.
 
 MolmoAct2 uses RTC and the existing normalization/cameras/gripper calibration.
-Sol reviews after five seconds of policy execution and after each correction.
+Sol now reviews Molmo's predicted joint/gripper chunk and its end-effector FK
+trajectory **before execution**, then after each correction. `mode=accept` releases
+only 15 policy steps (0.5 seconds at 30 Hz); the remaining suffix is discarded and
+fresh inference is reviewed. The RTC worker generates isolated proposals while the
+robot holds; it does not refill the motion queue with unreviewed actions. Settling,
+Molmo inference, and Sol API latency add to the time between prefixes. The previous
+five-second outcome-review mode remains available with `review_policy_chunks=false`.
 Frequent reviews do not impose a progress deadline: Sol must be patient with Molmo
 startup and grasp retries, without a fixed attempt limit. If repeated windows show
 little movement or the same failed approach, Sol should propose a small, bounded
@@ -272,8 +278,14 @@ requiring operator help can still produce `hold`, and `/stop` remains available.
 The robot holds during the API call. Gripper corrections use absolute 0 closed, 1 open,
 at most 2 strokes/s. End-effector corrections use the bounded IK contract below;
 raw arm-joint proposals are rejected. Policy motion retains the existing driver limits.
-The supervisor accepts `policy`, `intervention`, `end_effector`, `hold`, or `done`; every accepted
+The supervisor accepts `accept`, `policy`, `intervention`, `end_effector`, `hold`, or `done`; every accepted
 decision appears in the terminal and is saved with the raw reply and API latency.
+`accept` approves the exact displayed prefix; `policy` requests a new instruction
+and proposal, which must also be reviewed. Sol separately reports `execution_status`
+and `intent_status`; direct corrections require observed failure or misaligned
+proposed intent. The planner log also saves full native proposals and FK trajectories.
+The lightweight API preflight still uses only current images/pose, without loading
+Molmo or authorizing execution; proposal review starts inside the live rollout.
 The robot waits for the next review before returning from a direct correction to the VLA.
 
 This is the `hybrid` condition, distinct from the planner-only experiment. Pilot
