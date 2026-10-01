@@ -55,7 +55,7 @@ def hybrid_config():
             position_tolerance_m=0.003,
             rotation_tolerance_rad=0.025,
         )
-    return HybridConfig(limits=limits, end_effectors=end_effectors, policy_window_s=60, review_timeout_s=60)
+    return HybridConfig(limits=limits, end_effectors=end_effectors, policy_window_s=5, review_timeout_s=60)
 
 
 def planner_config(log_path):
