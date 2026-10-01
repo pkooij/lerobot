@@ -205,6 +205,7 @@ def ik_check(config, pose):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--vlm-only", action="store_true")
     parser.add_argument("--snapshot", type=Path)
     parser.add_argument("--launcher", type=Path)
     parser.add_argument("--capture-only", action="store_true")
@@ -213,6 +214,8 @@ def main():
     parser.add_argument("--ik-only", action="store_true")
     args = parser.parse_args()
     config = hybrid_config()
+    if args.vlm_only:
+        config = replace(config, vlm_only=True, review_policy_chunks=False)
     if args.flags:
         # One complete JSON argument for draccus; contains no credentials.
         print(json.dumps(asdict(config)))
@@ -275,7 +278,10 @@ def main():
     obs = checked_pose(config, saved["pose"])
     for name in ("top", "left", "right"):
         obs[name] = np.array(Image.open(args.snapshot / f"current_{name}.png").convert("RGB"))
-    planner = HybridPlanner(
+    from lerobot.rollout.vlm_agent import VlmAgentPlanner
+
+    planner_class = VlmAgentPlanner if args.vlm_only else HybridPlanner
+    planner = planner_class(
         planner_config(args.snapshot / "sol-preflight.jsonl"),
         "bi_yam_follower",
         # This lightweight preflight has no loaded VLA. Live rollout reviews actual chunks.

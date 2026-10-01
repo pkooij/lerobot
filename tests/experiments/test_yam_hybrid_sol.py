@@ -91,3 +91,24 @@ def test_estimated_wrist_mount_has_correct_zero_pose_axes():
         assert transform[:3, 0] == pytest.approx([0, -1, 0], abs=1e-10)
         assert np.linalg.det(transform[:3, :3]) == pytest.approx(1)
         assert camera["estimated"]
+
+
+def test_vlm_only_launcher_removes_vla_and_rtc_flags(tmp_path):
+    from examples.yam_experiments.run import prepare_arguments
+
+    base = [
+        "--robot.type=bi_yam_follower",
+        "--policy.path=/unused/checkpoint",
+        "--policy.device=cuda",
+        "--inference.type=rtc",
+        "--inference.queue_threshold=30",
+    ]
+    extra = ['--hybrid={"vlm_only":true}', "--planner.model_id=gpt-6.1-sol"]
+    flags = dict(x[2:].split("=", 1) for x in prepare_arguments(base, extra, tmp_path, "Sort cubes", 0))
+    assert not any(key.startswith("policy.") for key in flags)
+    assert {key: value for key, value in flags.items() if key.startswith("inference.")} == {
+        "inference.type": "sync"
+    }
+    assert flags["device"] == "cpu"
+    assert flags["duration"] == "0"
+    assert flags["planner.instructions"] == "[]"

@@ -56,10 +56,14 @@ def prepare_arguments(
             "resume": "false",
         }
     )
+    vlm_only = json.loads(flags.get("hybrid", "{}")).get("vlm_only", False)
+    if vlm_only:
+        flags = {key: value for key, value in flags.items() if not key.startswith(("policy.", "inference."))}
+        flags.update({"inference.type": "sync", "device": "cpu", "use_torch_compile": "false"})
     if "planner.model_id" in flags:
         from .campaign import CUBE_INSTRUCTIONS
 
-        flags["planner.instructions"] = json.dumps(CUBE_INSTRUCTIONS)
+        flags["planner.instructions"] = json.dumps([] if vlm_only else CUBE_INSTRUCTIONS)
         flags["planner.log_path"] = str(session_dir / "planner.jsonl")
     if flags.get("robot.type") != "bi_yam_follower":
         raise ValueError("This harness requires the tested bi_yam_follower adapter")
@@ -77,7 +81,7 @@ def main():
     )
     args, extra = parser.parse_known_args()
     manifest = json.loads((args.root / "manifest.json").read_text())
-    if args.condition not in {"human", "planner", "hybrid"}:
+    if args.condition not in {"human", "planner", "hybrid", "astra"}:
         parser.error(
             "Direct/hybrid Astra motion is not commissioned yet: configure the endpoint and validate its action adapter first."
         )
@@ -87,12 +91,16 @@ def main():
         parser.error("After pilots, freeze cube labels and a common positive timeout_s in manifest.json")
     if args.condition == "human" and any(x.startswith("--planner.") for x in extra):
         parser.error("The human condition must not have an external planner")
-    if args.condition == "hybrid" and not any(x.startswith("--hybrid=") for x in extra):
+    if args.condition in {"hybrid", "astra"} and not any(x.startswith("--hybrid=") for x in extra):
         parser.error("Hybrid pilot requires explicit --hybrid action contract")
-    if args.condition in {"planner", "hybrid"} and not any(
+    if args.condition in {"planner", "hybrid", "astra"} and not any(
         x.startswith("--planner.model_id=") for x in extra
     ):
         parser.error("Planner condition requires explicit --planner.model_id and endpoint settings")
+    if args.condition == "astra":
+        contract = next((x.split("=", 1)[1] for x in extra if x.startswith("--hybrid=")), "{}")
+        if not json.loads(contract).get("vlm_only"):
+            parser.error("Astra condition requires hybrid.vlm_only=true; no VLA may be loaded")
     session_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ") + "-" + args.condition
     session_dir = args.root.resolve() / "sessions" / session_id
     argv = prepare_arguments(
@@ -114,7 +122,7 @@ def main():
         parser.error("git is required for experiment provenance")
     branch = subprocess.check_output([git, "branch", "--show-current"], text=True).strip()
     expected_branch = (
-        "codex/yam-hybrid-sol" if args.condition == "hybrid" else "codex/yam-steering-experiments"
+        "codex/yam-hybrid-sol" if args.condition in {"hybrid", "astra"} else "codex/yam-steering-experiments"
     )
     if branch != expected_branch:
         parser.error(f"Switch to {expected_branch} before connecting")

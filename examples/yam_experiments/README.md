@@ -311,3 +311,19 @@ bash ~/yam-setup/test-hybrid-sol.sh
 ```
 
 Use `/trial pilot-sol-ee-01` and `/start`. `/stop` requests home and holds. The FK/IK check verifies model consistency near measured positions; it is not a physical tool-frame calibration. Inspect the first correction with clear space around the arms. Results are saved to `~/yam-setup/hybrid-sol-snapshot/ik-check.json`; planner decisions and executed native joint actions are recorded in the session evidence.
+
+### Sol-only visual agent
+
+`bash ~/yam-setup/test-vlm-sol.sh` uses the `astra` condition with the explicitly
+selected `gpt-6.1-sol` model. It removes the base launcher's policy/RTC arguments,
+performs read-only camera and FK/IK preflight, then waits for `/trial pilot-sol-only-01`
+and `/start`. There is no Molmo model load or policy normalization in this mode.
+`preview` prints the resolved arguments without API calls or hardware; `preflight`
+checks a fresh observation and a Sol tool request without executing it.
+
+Sol requests one bounded Cartesian or gripper move, gets new images plus measured
+arrival/residuals, and repeats. `/subtask <text>` updates Sol's goal. `/stop` or
+`/reset` requests home and holds; `/quit` disconnects. API reviews intentionally
+hold the arms, so this will be slower than a continuously executing VLA. A completed
+goal or concrete safety issue can end the attempt; there is no short rollout timer
+or three-correction cap. Use `/finish` and `/score` for the experiment journal.
