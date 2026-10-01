@@ -83,7 +83,7 @@ def hybrid_config():
         limits=limits,
         end_effectors=end_effectors,
         review_policy_chunks=True,
-        proposal_execution_steps=15,
+        proposal_execution_steps=30,
         policy_window_s=5,
         review_timeout_s=60,
     )

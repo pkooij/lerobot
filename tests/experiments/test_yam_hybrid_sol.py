@@ -12,6 +12,7 @@ from lerobot.rollout.hybrid import HybridConfig, PlannerDecision
 def test_pilot_contract_covers_both_arms_and_disables_raw_joint_changes():
     config = hybrid_config()
     assert len(config.limits) == 14
+    assert config.review_policy_chunks and config.proposal_execution_steps == 30
     decoded = draccus.decode(HybridConfig, asdict(config))
     for key, limit in decoded.limits.items():
         assert limit.max_delta == (1 if "gripper" in key else 0.25)

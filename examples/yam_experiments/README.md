@@ -262,8 +262,11 @@ Sol completion also requests home. A fault can prevent a completed return.
 MolmoAct2 uses RTC and the existing normalization/cameras/gripper calibration.
 Sol now reviews Molmo's predicted joint/gripper chunk and its end-effector FK
 trajectory **before execution**, then after each correction. `mode=accept` releases
-only 15 policy steps (0.5 seconds at 30 Hz); the remaining suffix is discarded and
-fresh inference is reviewed. The RTC worker generates isolated proposals while the
+up to 30 policy steps (1 second at 30 Hz), matching the current Molmo chunk. Sol
+reviews that entire advertised execution window; longer chunks still have their
+remaining suffix discarded. The final approved target is retained during settling
+so motor tracking lag is not cancelled by replacing it with measured feedback.
+Fresh inference is then reviewed. The RTC worker generates isolated proposals while the
 robot holds; it does not refill the motion queue with unreviewed actions. Settling,
 Molmo inference, and Sol API latency add to the time between prefixes. The previous
 five-second outcome-review mode remains available with `review_policy_chunks=false`.
