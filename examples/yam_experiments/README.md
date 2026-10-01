@@ -260,8 +260,12 @@ Use `/finish` to return home, then `/score success|partial|failure|interrupted <
 Sol completion also requests home. A fault can prevent a completed return.
 
 MolmoAct2 uses RTC and the existing normalization/cameras/gripper calibration.
-Sol reviews after five seconds of policy execution and after each correction;
-the robot holds during the API call. Gripper corrections use absolute 0 closed, 1 open,
+Sol reviews after 60 seconds of policy execution and after each correction.
+Molmo gets an uninterrupted window to start, reach, and retry grasps. Slow visual
+progress alone does not justify stopping: Sol is instructed to continue an appropriate,
+safe subtask without a fixed attempt limit. Concrete safety concerns or problems
+requiring operator help can still produce `hold`, and `/stop` remains available.
+The robot holds during the API call. Gripper corrections use absolute 0 closed, 1 open,
 at most 2 strokes/s. End-effector corrections use the bounded IK contract below;
 raw arm-joint proposals are rejected. Policy motion retains the existing driver limits.
 The supervisor accepts `policy`, `intervention`, `end_effector`, `hold`, or `done`; every accepted
