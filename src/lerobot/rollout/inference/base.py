@@ -93,6 +93,8 @@ class QueryAnswer:
     """The planner finished its goal; answer is a status, not a robot instruction."""
     held: bool = False
     """A NEXT_SUBTASK answer that repeated the current instruction: nothing was sent."""
+    status_only: bool = False
+    """Progress notification, not a new instruction or a terminal query result."""
 
     @property
     def ok(self) -> bool:
