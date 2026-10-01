@@ -66,6 +66,7 @@ from .inference.hybrid import HybridInferenceEngine
 from .inference.rtc import supports_rtc_inference
 from .planner import VlmPlanner, training_vocabulary
 from .robot_wrapper import ThreadSafeRobot
+from .vlm_agent import NoPolicyEngine, VlmAgentPlanner
 
 if TYPE_CHECKING or _peft_available:
     from peft import PeftConfig, PeftModel
@@ -238,7 +239,7 @@ class HardwareContext:
 class PolicyContext:
     """Loaded policy and its inference engine."""
 
-    policy: PreTrainedPolicy
+    policy: PreTrainedPolicy | None
     preprocessor: PolicyProcessorPipeline
     postprocessor: PolicyProcessorPipeline
     inference: InferenceEngine
@@ -330,54 +331,62 @@ def build_rollout_context(
 
     # --- 1. Policy (heavy I/O, but no hardware yet) -------------------
     policy_config = cfg.policy
-    if policy_config is None:
-        raise ValueError("--policy.path is required for rollout")
-    logger.info("Loading policy from '%s'...", policy_config.pretrained_path)
-    # Policy constructors and custom processors must use the resolved rollout device too.
-    policy_config.device = cfg.device
+    vlm_only = cfg.hybrid is not None and cfg.hybrid.vlm_only
+    policy = None
+    torch_compile_active = False
+    if vlm_only:
+        if policy_config is not None or is_rtc or cfg.use_torch_compile:
+            raise ValueError("VLM-only control must not load a policy or enable RTC/compile")
+        logger.info("VLM-only control: no VLA checkpoint, normalizer or inference worker loaded")
+    else:
+        if policy_config is None:
+            raise ValueError("--policy.path is required for rollout")
+        logger.info("Loading policy from '%s'...", policy_config.pretrained_path)
+        # Policy constructors and custom processors must use the resolved rollout device too.
+        policy_config.device = cfg.device
 
-    if is_rtc:
-        _validate_trained_rtc_rollout_config(policy_config, cfg.inference)
+        if is_rtc:
+            _validate_trained_rtc_rollout_config(policy_config, cfg.inference)
 
-    if hasattr(policy_config, "compile_model"):
-        policy_config.compile_model = cfg.use_torch_compile
+        if hasattr(policy_config, "compile_model"):
+            policy_config.compile_model = cfg.use_torch_compile
 
-    if policy_config.type == "vqbet" and cfg.device == "mps":
-        raise NotImplementedError(
-            "Current implementation of VQBeT does not support `mps` backend. "
-            "Please use `cpu` or `cuda` backend."
-        )
-
-    policy = _load_pretrained_policy(policy_config)
-
-    if is_rtc:
-        if not supports_rtc_inference(policy):
-            raise ValueError(
-                f"RTC inference is not supported by policy type '{policy_config.type}': "
-                "the policy must implement RTC semantics and predict_action_chunk must accept "
-                "inference_delay and prev_chunk_left_over. Use '--inference.type=sync' instead."
+        if policy_config.type == "vqbet" and cfg.device == "mps":
+            raise NotImplementedError(
+                "Current implementation of VQBeT does not support `mps` backend. "
+                "Please use `cpu` or `cuda` backend."
             )
-        policy.config.rtc_config = cfg.inference.rtc
-        if hasattr(policy, "init_rtc_processor"):
-            policy.init_rtc_processor()
 
-    policy = policy.to(cfg.device)
-    policy.eval()
-    logger.info("Policy loaded: type=%s, device=%s", policy_config.type, cfg.device)
+        policy = _load_pretrained_policy(policy_config)
 
-    torch_compile_active = cfg.use_torch_compile
-    if cfg.use_torch_compile and policy.type not in ("pi0", "pi05"):
-        torch_compile_active = _wrap_predict_action_chunk_with_torch_compile(
-            policy,
-            backend=cfg.torch_compile_backend,
-            mode=cfg.torch_compile_mode,
-        )
+        if is_rtc:
+            if not supports_rtc_inference(policy):
+                raise ValueError(
+                    f"RTC inference is not supported by policy type '{policy_config.type}': "
+                    "the policy must implement RTC semantics and predict_action_chunk must accept "
+                    "inference_delay and prev_chunk_left_over. Use '--inference.type=sync' instead."
+                )
+            policy.config.rtc_config = cfg.inference.rtc
+            if hasattr(policy, "init_rtc_processor"):
+                policy.init_rtc_processor()
 
-    if cfg.use_torch_compile and not torch_compile_active:
-        # RolloutConfig.__post_init__ reloads the policy configuration, so avoid
-        # dataclasses.replace when carrying the effective state downstream.
-        cfg = copy(cfg)
-        cfg.use_torch_compile = False
+        policy = policy.to(cfg.device)
+        policy.eval()
+        logger.info("Policy loaded: type=%s, device=%s", policy_config.type, cfg.device)
+
+        torch_compile_active = cfg.use_torch_compile
+        if cfg.use_torch_compile and policy.type not in ("pi0", "pi05"):
+            torch_compile_active = _wrap_predict_action_chunk_with_torch_compile(
+                policy,
+                backend=cfg.torch_compile_backend,
+                mode=cfg.torch_compile_mode,
+            )
+
+        if cfg.use_torch_compile and not torch_compile_active:
+            # RolloutConfig.__post_init__ reloads the policy configuration, so avoid
+            # dataclasses.replace when carrying the effective state downstream.
+            cfg = copy(cfg)
+            cfg.use_torch_compile = False
 
     # --- 2. Robot-side processors (user-supplied or defaults) --------
     if (
@@ -395,7 +404,8 @@ def build_rollout_context(
     if robot_config is None:
         raise ValueError("--robot.type is required for rollout")
     robot = make_robot_from_config(robot_config)
-    robot.validate_policy_config(policy_config)
+    if policy_config is not None:
+        robot.validate_policy_config(policy_config)
     robot_wrapper = ThreadSafeRobot(robot)
 
     # --- 4. Features + action-key reconciliation ---------------------
@@ -450,7 +460,7 @@ def build_rollout_context(
 
     # Validate visual features if no rename_map is active
     rename_map = cfg.rename_map
-    if not rename_map:
+    if not rename_map and policy_config is not None:
         expected_visuals = {
             k for k, v in (policy_config.input_features or {}).items() if v.type == FeatureType.VISUAL
         }
@@ -528,22 +538,27 @@ def build_rollout_context(
             cfg.rename_map,
         )
 
-    preprocessor, postprocessor = make_pre_post_processors(
-        policy_cfg=policy_config,
-        pretrained_path=policy_config.pretrained_path,
-        pretrained_revision=policy_config.pretrained_revision,
-        dataset_stats=dataset_stats,
-        preprocessor_overrides={
-            "device_processor": {"device": cfg.device},
-            "rename_observations_processor": {"rename_map": cfg.rename_map},
-        },
-    )
+    if vlm_only:
+        preprocessor = PolicyProcessorPipeline(steps=[])
+        postprocessor = PolicyProcessorPipeline(steps=[])
+    else:
+        assert policy_config is not None and policy is not None
+        preprocessor, postprocessor = make_pre_post_processors(
+            policy_cfg=policy_config,
+            pretrained_path=policy_config.pretrained_path,
+            pretrained_revision=policy_config.pretrained_revision,
+            dataset_stats=dataset_stats,
+            preprocessor_overrides={
+                "device_processor": {"device": cfg.device},
+                "rename_observations_processor": {"rename_map": cfg.rename_map},
+            },
+        )
 
-    # A relative-action chunk is anchored to the state it was predicted from, and the engines
-    # below rerun the preprocessor once per tick. Hand the step the policy's queue depth so it
-    # holds that anchor until the chunk drains, instead of following the moving arm. Harmless
-    # for the chunk-at-once engines (RTC), whose policy queue is always empty.
-    bind_relative_anchor(policy, preprocessor)
+        # A relative-action chunk is anchored to the state it was predicted from, and the engines
+        # below rerun the preprocessor once per tick. Hand the step the policy's queue depth so it
+        # holds that anchor until the chunk drains, instead of following the moving arm. Harmless
+        # for the chunk-at-once engines (RTC), whose policy queue is always empty.
+        bind_relative_anchor(policy, preprocessor)
 
     # --- 7. Inference strategy (needs policy + pre/post + hardware) --
     logger.info(
@@ -551,21 +566,26 @@ def build_rollout_context(
         cfg.inference.type if hasattr(cfg.inference, "type") else "sync",
     )
     task_str = cfg.dataset.single_task if cfg.dataset else cfg.task
-    inference_strategy = create_inference_engine(
-        cfg.inference,
-        policy=policy,
-        preprocessor=preprocessor,
-        postprocessor=postprocessor,
-        robot_wrapper=robot_wrapper,
-        dataset_features=dataset_features,
-        ordered_action_keys=ordered_action_keys,
-        task=task_str,
-        fps=cfg.fps,
-        device=cfg.device,
-        use_torch_compile=torch_compile_active,
-        compile_warmup_inferences=cfg.compile_warmup_inferences,
-        shutdown_event=shutdown_event,
-    )
+    inference_strategy: InferenceEngine
+    if vlm_only:
+        inference_strategy = NoPolicyEngine(task=task_str)
+    else:
+        assert policy is not None
+        inference_strategy = create_inference_engine(
+            cfg.inference,
+            policy=policy,
+            preprocessor=preprocessor,
+            postprocessor=postprocessor,
+            robot_wrapper=robot_wrapper,
+            dataset_features=dataset_features,
+            ordered_action_keys=ordered_action_keys,
+            task=task_str,
+            fps=cfg.fps,
+            device=cfg.device,
+            use_torch_compile=torch_compile_active,
+            compile_warmup_inferences=cfg.compile_warmup_inferences,
+            shutdown_event=shutdown_event,
+        )
     if cfg.planner is not None:
         runtime_messages = next(
             (
@@ -575,7 +595,7 @@ def build_rollout_context(
             ),
             None,
         )
-        if not cfg.planner.instructions:
+        if not cfg.planner.instructions and policy_config is not None:
             try:
                 cfg.planner.instructions = training_vocabulary(str(policy_config.pretrained_path))
                 logger.info(
@@ -592,7 +612,8 @@ def build_rollout_context(
             inference_strategy = HybridInferenceEngine(
                 inference_strategy, cfg.hybrid, ordered_action_keys, cfg.interpolation_multiplier
             )
-            inference_strategy.external_text = HybridPlanner(
+            planner_class = VlmAgentPlanner if vlm_only else HybridPlanner
+            inference_strategy.external_text = planner_class(
                 cfg.planner, robot_wrapper.robot_type, runtime_messages, hybrid=cfg.hybrid
             )
         else:
