@@ -69,3 +69,24 @@ def test_preflight_pose_uses_runtime_feedback_tolerance():
     pose["left_joint_1.pos"] = -0.1
     with pytest.raises(ValueError, match="feedback tolerance"):
         checked_pose(config, pose)
+
+
+def test_estimated_wrist_mount_has_correct_zero_pose_axes():
+    import numpy as np
+
+    pytest.importorskip("mujoco")
+    from lerobot.rollout.end_effector import EndEffectorKinematics, parse_pose
+
+    config = hybrid_config()
+    pose = dict.fromkeys(config.limits, 0.0)
+    for side, ee in config.end_effectors.items():
+        solver = EndEffectorKinematics(ee)
+        tip, _ = parse_pose(solver.forward(pose))
+        camera = solver.camera_poses(pose)[side]
+        transform = np.asarray(camera["T_base_from_camera"])
+        # At zero joints: camera behind (-base X), above (+base Z), looking forward/down.
+        assert transform[:3, 3] - tip == pytest.approx([-0.075, 0, 0.070], abs=1e-10)
+        assert transform[:3, 2] == pytest.approx([np.cos(np.deg2rad(25)), 0, -np.sin(np.deg2rad(25))])
+        assert transform[:3, 0] == pytest.approx([0, -1, 0], abs=1e-10)
+        assert np.linalg.det(transform[:3, :3]) == pytest.approx(1)
+        assert camera["estimated"]

@@ -15,7 +15,7 @@ from .run import launcher_arguments
 def hybrid_config():
     from lerobot.robots.bi_yam_follower import bi_yam_follower
     from lerobot.robots.bi_yam_follower.config_bi_yam_follower import JOINT_LIMITS, JOINT_NAMES
-    from lerobot.rollout.end_effector import EndEffectorConfig
+    from lerobot.rollout.end_effector import EndEffectorConfig, ToolCameraMount
     from lerobot.rollout.hybrid import HybridConfig, InterventionLimit
 
     limits = {}
@@ -49,9 +49,33 @@ def hybrid_config():
                 "Base +Z is up for the upright mounting. X/Y are native model axes, NOT image right/left. "
                 "No camera-to-base or inter-arm transform is calibrated. The I2RT linear_4310 grasp_site "
                 "is the midpoint of the fingertips, independent of opening, 0.14465 m along gripper-body -Z. "
-                "Its local +Z points from the wrist toward the fingertips. Use measured FK as the reference; "
+                "Its local +Z points from the wrist toward the fingertips; +X is down and +Y left at zero joints. "
+                "An estimated wrist-camera mount is supplied separately, not an empirical calibration. "
+                "Use measured FK as the reference; "
                 "do not guess table coordinates from pixels."
             ),
+            camera_mounts={
+                side: ToolCameraMount(
+                    position_m=[-0.070, 0.0, -0.075],
+                    # R_tool_camera = Rz(-90 degrees) Rx(-25 degrees).
+                    quaternion_wxyz=[
+                        math.cos(math.radians(12.5)) / math.sqrt(2),
+                        -math.sin(math.radians(12.5)) / math.sqrt(2),
+                        math.sin(math.radians(12.5)) / math.sqrt(2),
+                        -math.cos(math.radians(12.5)) / math.sqrt(2),
+                    ],
+                    provenance=(
+                        "ESTIMATE for Orbbec Gemini 305. Operator measured camera 75 mm behind and 70 mm "
+                        "above fingertip midpoint. Assumes these refer to the active optical centre, "
+                        "zero lateral offset, identical mounts on both arms and unrotated/unmirrored RGB. "
+                        "25 degree downward pitch is borrowed from I2RT linear_4310 D405 mount CAD "
+                        "(i2rt commit 120c3c814, station/yambox_linear_4310_d405_decxin/README.md), "
+                        "not a measured Gemini mount angle. Roll/yaw use that mount convention. "
+                        "Optical-centre offsets, actual pitch/roll/yaw and each mount remain unverified. "
+                        "Use approximate directions only with visible clearance; do not infer cube depth."
+                    ),
+                )
+            },
             position_tolerance_m=0.003,
             rotation_tolerance_rad=0.025,
         )
