@@ -25,13 +25,17 @@ def test_pilot_contract_covers_both_arms_and_disables_raw_joint_changes():
     assert correction.validate_motion(config, pose)["left_gripper.pos"] == 1
 
 
-def test_sol_client_requires_environment_credential(tmp_path):
+def test_sol_client_requires_environment_credential(tmp_path, monkeypatch):
+    monkeypatch.delenv("SOL_SERVICE_TIER", raising=False)
     config = planner_config(tmp_path / "planner.jsonl")
     assert config.model_id == "gpt-6.1-sol"
     assert config.api_key_env == "OPENAI_API_KEY"
     assert config.api_key == "EMPTY"
     assert config.api_mode == "responses"
     assert config.request_max_retries == 0
+    assert config.service_tier == "fast"
+    monkeypatch.setenv("SOL_SERVICE_TIER", "default")
+    assert planner_config(tmp_path / "planner.jsonl").service_tier == "default"
 
 
 def test_yam_tool_transform_and_ik_round_trips():

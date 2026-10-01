@@ -68,6 +68,7 @@ def planner_config(log_path):
         api_key_env="OPENAI_API_KEY",
         auto_serve=False,
         reasoning_effort="low",
+        service_tier=os.environ.get("SOL_SERVICE_TIER", "fast"),
         max_new_tokens=2048,
         request_timeout_s=45,
         request_max_retries=0,

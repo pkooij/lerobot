@@ -247,6 +247,8 @@ bash ~/yam-setup/test-hybrid-sol.sh preflight
 bash ~/yam-setup/test-hybrid-sol.sh
 ```
 
+The Sol launcher requests Fast mode (`service_tier=fast`) with reasoning `low`. Fast mode costs twice Standard and is unavailable with EU data residency. The client prints the actual tier returned by OpenAI; `used=default` means Standard processing was used. To request Standard explicitly, prefix any launcher command with `SOL_SERVICE_TIER=default`. This setting applies to both preflight and rollout.
+
 Set `OPENAI_API_KEY` in that terminal, or enter it at the hidden prompt. Preflight
 captures the three cameras and calibrated joint state using `read_only=true`, then
 asks `gpt-6.1-sol` for one decision without executing it. A successful preflight

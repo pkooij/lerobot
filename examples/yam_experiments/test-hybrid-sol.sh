@@ -49,5 +49,6 @@ exec "$uv_bin" run --no-sync python -m examples.yam_experiments.run \
   --planner.model_id=gpt-6.1-sol --planner.api_mode=responses \
   --planner.api_base=https://api.openai.com/v1 --planner.api_key_env=OPENAI_API_KEY \
   --planner.auto_serve=false --planner.reasoning_effort=low \
+  --planner.service_tier="${SOL_SERVICE_TIER:-fast}" \
   --planner.max_new_tokens=2048 --planner.request_timeout_s=45 --planner.request_max_retries=0 \
   --planner.history=2 "--hybrid=$hybrid_config"
