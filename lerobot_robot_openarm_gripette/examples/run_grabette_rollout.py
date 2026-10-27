@@ -17,15 +17,15 @@
 """Run a Cartesian-relative Grabette policy through LeRobot's rollout engine."""
 
 import argparse
+import sys
 from pathlib import Path
 from typing import cast
 
 import numpy as np
-from gripette.grasp_projection import GraspProjection
 from huggingface_hub import snapshot_download
-from openarm_gripette_model import OPENARM_RIGHT_DIR
 
 from lerobot.configs import DatasetRecordConfig, PreTrainedConfig
+from lerobot.inference import SyncInferenceConfig
 from lerobot.lerobot_types import RobotAction, RobotObservation
 from lerobot.model.kinematics import RobotKinematics
 from lerobot.processor import (
@@ -43,7 +43,6 @@ from lerobot.rollout import (
     build_rollout_context,
     create_strategy,
 )
-from lerobot.rollout.inference import SyncInferenceConfig
 from lerobot.rollout.robot_wrapper import ThreadSafeRobot
 from lerobot.rollout.strategies import EpisodicStrategy
 from lerobot.utils.device_utils import auto_select_torch_device
@@ -56,6 +55,7 @@ from lerobot_robot_openarm_gripette.grabette_processors import (
     GrabetteRelativePoseToJoints,
     GripettePolicyObservation,
 )
+from lerobot_robot_openarm_gripette.gripette_compat import GraspProjection, resolve_openarm_model
 from lerobot_robot_openarm_gripette.manual_start import prepare_manual_start
 
 URDF_JOINTS = [
@@ -106,6 +106,14 @@ def resolve_policy(args: argparse.Namespace) -> PreTrainedConfig:
         )
         path = Path(root) / subfolder
     config = PreTrainedConfig.from_pretrained(path)
+    if config.type == "hy_vla":
+        if config.embodiment != "single_arm" or config.relative_convention != "current":
+            raise ValueError("This runner requires the single-arm current-relative Hy-VLA checkpoint")
+        if not 1 <= args.n_action_steps <= config.physical_action_horizon:
+            raise ValueError("--n_action_steps must be within the saved physical horizon")
+        config.pretrained_path = str(path)
+        config.execution_horizon = args.n_action_steps
+        return config
     if (
         not config.use_relative_actions
         or config.relative_action_mode != "pose"
@@ -120,18 +128,26 @@ def resolve_policy(args: argparse.Namespace) -> PreTrainedConfig:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--policy", default="CarolinePascal/grabette-pick-and-place-texture-act")
-    parser.add_argument("--checkpoint", default="070000")
+    parser.add_argument("--policy", default="pepijn223/hy-vla-umi-grabette-5epochs")
+    parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--revision", default=None)
-    parser.add_argument("--port", default="can0")
+    parser.add_argument("--port", default="peakusb:can0@1000000" if sys.platform == "darwin" else "can0")
     parser.add_argument("--gripette", default="172.18.7.107:50051")
     parser.add_argument("--id", default="my_follower")
     parser.add_argument("--device", default=None)
-    parser.add_argument("--task", default="")
-    parser.add_argument("--fps", type=float, default=10.0)
+    parser.add_argument("--task", default="Grabette demonstration")
+    parser.add_argument("--fps", type=float, default=50.0)
     parser.add_argument("--n_action_steps", type=int, default=10)
     parser.add_argument("--interpolation_multiplier", type=int, default=1)
     parser.add_argument("--duration", type=float, default=60.0)
+    parser.add_argument("--reset_time", type=float, default=20.0)
+    parser.add_argument("--urdf", type=Path, default=None)
+    parser.add_argument(
+        "--log_dir",
+        type=Path,
+        default=Path(__file__).resolve().parents[2] / "outputs/openarm_gripette_policy",
+    )
+    parser.add_argument("--offline_observation", type=Path, default=None)
     parser.add_argument("--joint_signs", type=float, nargs=7, default=[1.0] * 7)
     parser.add_argument("--max_joint_step", type=float, default=5.0)
     parser.add_argument("--initial_gripper_strategy", type=float, default=None)
@@ -167,12 +183,19 @@ def main() -> None:
 
     init_logging()
     policy_config = resolve_policy(args)
+    if policy_config.type == "hy_vla":
+        from lerobot_robot_openarm_gripette.hy_vla_rollout import run_hy_vla_rollout
+
+        run_hy_vla_rollout(args, policy_config, URDF_JOINTS)
+        return
     (image_key, image_feature), *others = policy_config.image_features.items()
     if others:
         raise ValueError(f"Expected a single camera input, got {list(policy_config.image_features)}")
     camera_name = image_key.removeprefix("observation.images.")
 
-    kinematics = RobotKinematics(str(OPENARM_RIGHT_DIR), target_frame_name="oak_l", joint_names=URDF_JOINTS)
+    kinematics = RobotKinematics(
+        str(resolve_openarm_model(args.urdf)), target_frame_name="oak_l", joint_names=URDF_JOINTS
+    )
     for dof in ("proximal", "distal", "r_wrist_roll_mimic"):
         kinematics.solver.mask_dof(dof)
     kinematics.solver.enable_joint_limits(True)

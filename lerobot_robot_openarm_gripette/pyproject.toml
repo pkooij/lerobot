@@ -20,8 +20,8 @@ dependencies = [
 # Grabette policy runners: rollout/data visualization and placo IK on the OpenArm + Gripette URDF.
 policy = [
     "lerobot[dataset,kinematics,viz]>=0.6.2,<0.7.0",
-    "openarm-gripette-model @ git+https://github.com/pollen-robotics/grabette.git@develop#subdirectory=integrations/openarm/openarm_gripette_model",
 ]
+hy-vla = ["lerobot[hy_vla,kinematics,accelerate-dep]>=0.6.2,<0.7.0"]
 
 [tool.setuptools.packages.find]
 include = ["lerobot_robot_openarm_gripette*"]

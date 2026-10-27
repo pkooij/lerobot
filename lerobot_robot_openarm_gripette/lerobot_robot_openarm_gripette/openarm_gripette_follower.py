@@ -84,8 +84,17 @@ class OpenArmGripetteFollower(Robot):
 
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
-        self.arm.connect(calibrate=calibrate)
-        self._gripper.connect()
+        if self.config.passive:
+            self.arm.bus.connect()
+            try:
+                self._gripper.connect(enable_torque=False)
+            except BaseException:
+                self._gripper.disconnect(disable_torque=False)
+                self.arm.bus.disconnect(disable_torque=False, clear_errors=False)
+                raise
+        else:
+            self.arm.connect(calibrate=calibrate)
+            self._gripper.connect()
         logger.info(f"{self} connected.")
 
     @property
@@ -104,6 +113,8 @@ class OpenArmGripetteFollower(Robot):
 
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
+        if self.config.passive:
+            raise RuntimeError("Passive Gripette connection cannot send motor targets")
         gripper_keys = {f"{m}.pos" for m in MOTORS}
         sent = self.arm.send_action({k: v for k, v in action.items() if k not in gripper_keys})
         goals = {k.removesuffix(".pos"): v for k, v in action.items() if k in gripper_keys}
@@ -113,6 +124,10 @@ class OpenArmGripetteFollower(Robot):
 
     @check_if_not_connected
     def disconnect(self) -> None:
+        if self.config.passive:
+            self._gripper.disconnect(disable_torque=False)
+            self.arm.bus.disconnect(disable_torque=False, clear_errors=False)
+            return
         self._gripper.disconnect(disable_torque=self.config.arm_config.disable_torque_on_disconnect)
         self.arm.disconnect()
         logger.info(f"{self} disconnected.")

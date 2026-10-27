@@ -113,11 +113,9 @@ class MotorBridgeDamiaoBus(MotorsBusBase):
     def connect(self, handshake: bool = True) -> None:
         use_can_fd = self.use_can_fd
         channel = self.port
-        # On macOS, FD traffic already reaches the libusb PCAN backend (motorbridge
-        # feat/pcan-usb-fd-native) through ``from_socketcanfd``. For classic CAN,
-        # prefix the channel with ``pcanfd:`` so it hits that backend instead of PCBUSB.
-        if _is_macos() and not use_can_fd and not channel.startswith("pcanfd:"):
-            channel = f"pcanfd:{channel}"
+        # PR #28 selects the native PEAK backend explicitly for both CAN modes.
+        if _is_macos() and not channel.startswith(("peakusb:", "slcan:")):
+            channel = f"peakusb:{channel}"
 
         logger.info(f"Connecting Damiao motors on {channel} (can_fd={use_can_fd})...")
         if use_can_fd:
@@ -132,17 +130,20 @@ class MotorBridgeDamiaoBus(MotorsBusBase):
         logger.debug(f"{self.__class__.__name__} connected.")
 
     @check_if_not_connected
-    def disconnect(self, disable_torque: bool = True) -> None:
+    def disconnect(self, disable_torque: bool = True, *, clear_errors: bool = True) -> None:
         for handle in self._handles.values():
             try:
                 if disable_torque:
                     handle.disable()
-                handle.clear_error()
+                if clear_errors:
+                    handle.clear_error()
             except Exception:
                 logger.exception("Failed to disable/clear a Damiao motor during disconnect.")
             handle.close()
 
         if self._controller is not None:
+            if not disable_torque and not clear_errors:
+                self._controller.close_bus()
             self._controller.close()
         self._controller = None
         self._handles = {}

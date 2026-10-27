@@ -52,6 +52,53 @@ def _action(x=0.0):
     }
 
 
+def test_hy_vla_absolute_gripper_pose_goes_directly_to_ik_and_clamps_gripper():
+    from lerobot_robot_openarm_gripette.gripette_compat import DatasetGraspProjection
+
+    kinematics = MagicMock()
+    kinematics.forward_kinematics.return_value = np.eye(4)
+    kinematics.inverse_kinematics.side_effect = lambda q, *_args, **_kwargs: q
+    projection = DatasetGraspProjection()
+    processor = GrabetteRelativePoseToJoints(
+        kinematics=kinematics,
+        pose_mode="absolute",
+        projection=projection,
+    )
+    action = {**_action(x=0.4), "strategy": -0.009, "closure": 1.2}
+    result = processor({TransitionKey.ACTION: action, TransitionKey.OBSERVATION: _observation()})[
+        TransitionKey.ACTION
+    ]
+    target = kinematics.inverse_kinematics.call_args.args[1]
+    np.testing.assert_array_equal(target[:3, 3], [0.4, 0, 0])
+    kinematics.forward_kinematics.assert_not_called()
+    assert result["distal.pos"] == 0.0
+    assert result["proximal.pos"] == pytest.approx(projection.lim_prox)
+
+
+@pytest.mark.parametrize("field", ["x", "r6d_0", "strategy"])
+def test_nonfinite_hy_vla_commands_are_rejected(field):
+    kinematics = MagicMock()
+    kinematics.inverse_kinematics.side_effect = lambda q, *_args, **_kwargs: q
+    processor = GrabetteRelativePoseToJoints(kinematics=kinematics, pose_mode="absolute")
+    with pytest.raises(ValueError):
+        processor(
+            {
+                TransitionKey.ACTION: {**_action(), field: float("nan")},
+                TransitionKey.OBSERVATION: _observation(),
+            }
+        )
+
+
+def test_dataset_projection_preserves_strategy_closure_and_recorded_calibration():
+    from lerobot_robot_openarm_gripette.gripette_compat import DatasetGraspProjection
+
+    projection = DatasetGraspProjection()
+    proximal, distal = projection.decode(0.25, 0.5)
+    assert proximal == pytest.approx(np.deg2rad(93.5) * 0.5)
+    assert distal == pytest.approx(np.deg2rad(102) * 0.25)
+    assert projection.encode(proximal, distal) == pytest.approx((0.25, 0.5))
+
+
 def test_gripette_observation_encodes_policy_state_and_preserves_camera():
     processed = GripettePolicyObservation()({TransitionKey.OBSERVATION: _observation()})[
         TransitionKey.OBSERVATION
@@ -91,8 +138,7 @@ def test_relative_pose_processor_holds_anchor_for_chunk_and_decodes_gripper(capl
     assert outputs[0]["proximal.pos"] == 1.0
     assert outputs[0]["distal.pos"] == 0.75
     assert (
-        "Predicted relative action: X=+0.1000 m Y=+0.0000 m Z=+0.0000 m | "
-        "RX=+0.0 deg RY=+0.0 deg RZ=+0.0 deg"
+        "Predicted relative action: X=+0.1000 m Y=+0.0000 m Z=+0.0000 m | RX=+0.0 deg RY=+0.0 deg RZ=+0.0 deg"
     ) in caplog.messages
 
 

@@ -19,12 +19,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
-from gripette.grasp_projection import GraspProjection
 
 from lerobot.configs import FeatureType, PipelineFeatureType, PolicyFeature
 from lerobot.lerobot_types import RobotAction, RobotObservation, TransitionKey
 from lerobot.model.kinematics import RobotKinematics
 from lerobot.processor import ObservationProcessorStep, ProcessorStepRegistry, RobotActionProcessorStep
+
+from .gripette_compat import GraspProjection
 
 ROBOT_JOINTS = [f"joint_{i}" for i in range(1, 8)]
 POSITION_NAMES = ["x", "y", "z"]
@@ -70,6 +71,7 @@ class GrabetteRelativePoseToJoints(RobotActionProcessorStep):
     orientation_weight: float = 10.0
     max_iters: int = 30
     resync_on_chunk_start: bool = False
+    pose_mode: str = "chunk_relative"
     projection: GraspProjection = field(default_factory=GraspProjection)
     _q_cmd: np.ndarray | None = field(default=None, init=False, repr=False)
     _anchor: np.ndarray | None = field(default=None, init=False, repr=False)
@@ -82,6 +84,8 @@ class GrabetteRelativePoseToJoints(RobotActionProcessorStep):
             raise ValueError("joint_signs must contain seven values, each +1 or -1")
         if self.max_joint_step <= 0:
             raise ValueError("max_joint_step must be positive")
+        if self.pose_mode not in {"chunk_relative", "absolute"}:
+            raise ValueError("pose_mode must be 'chunk_relative' or 'absolute'")
 
     def bind_action_queue(self, count_queued_actions: Callable[[], int], n_action_steps: int) -> None:
         self._count_queued_actions = count_queued_actions
@@ -105,12 +109,18 @@ class GrabetteRelativePoseToJoints(RobotActionProcessorStep):
             )
 
         rows = np.array([action[name] for name in ROTATION_NAMES], dtype=np.float64).reshape(2, 3)
+        if not np.isfinite(rows).all() or np.linalg.norm(rows[0]) < 1e-8:
+            raise ValueError("Policy rotation must contain finite, nonzero axes")
         row1 = rows[0] / np.linalg.norm(rows[0])
         row2 = rows[1] - np.dot(row1, rows[1]) * row1
+        if np.linalg.norm(row2) < 1e-8:
+            raise ValueError("Policy rotation axes must not be collinear")
         row2 = row2 / np.linalg.norm(row2)
         pose = np.eye(4, dtype=np.float64)
         pose[:3, :3] = np.stack([row1, row2, np.cross(row1, row2)])
         pose[:3, 3] = [float(action[name]) for name in POSITION_NAMES]
+        if not np.isfinite(pose).all():
+            raise ValueError("Policy pose must be finite")
 
         ry = np.arcsin(np.clip(-pose[2, 0], -1.0, 1.0))
         if abs(np.cos(ry)) > 1e-6:
@@ -122,29 +132,36 @@ class GrabetteRelativePoseToJoints(RobotActionProcessorStep):
         rotation_deg = np.degrees([rx, ry, rz])
         rotation_deg[np.abs(rotation_deg) < 5e-4] = 0.0
         logger.info(
-            "Predicted relative action: X=%+.4f m Y=%+.4f m Z=%+.4f m | "
-            "RX=%+.1f deg RY=%+.1f deg RZ=%+.1f deg",
+            "Predicted %s action: X=%+.4f m Y=%+.4f m Z=%+.4f m | RX=%+.1f deg RY=%+.1f deg RZ=%+.1f deg",
+            "relative" if self.pose_mode == "chunk_relative" else "absolute",
             *pose[:3, 3],
             *rotation_deg,
         )
 
-        if chunk_start:
+        if chunk_start and self.pose_mode == "chunk_relative":
             self._anchor = self.kinematics.forward_kinematics(self._q_cmd) @ np.linalg.inv(pose)
+
+        target_pose = pose if self.pose_mode == "absolute" else self._anchor @ pose
 
         q_target = self.kinematics.inverse_kinematics(
             self._q_cmd,
-            self._anchor @ pose,
+            target_pose,
             position_weight=self.position_weight,
             orientation_weight=self.orientation_weight,
             max_iters=self.max_iters,
         )
         jump = np.abs(q_target - self._q_cmd)
+        if not np.isfinite(q_target).all():
+            raise RuntimeError("IK produced a non-finite joint target")
         if jump.max() > self.max_joint_step:
             raise RuntimeError(
                 f"IK moved {ROBOT_JOINTS[jump.argmax()]} by {jump.max():.1f} deg in one tick, aborting."
             )
         self._q_cmd = q_target
-        proximal, distal = self.projection.decode(float(action["strategy"]), float(action["closure"]))
+        strategy, closure = np.clip([action["strategy"], action["closure"]], 0.0, 1.0)
+        if not np.isfinite([strategy, closure]).all():
+            raise ValueError("Policy gripper targets must be finite")
+        proximal, distal = self.projection.decode(float(strategy), float(closure))
         return {
             **{
                 f"{joint}.pos": float(sign * target)

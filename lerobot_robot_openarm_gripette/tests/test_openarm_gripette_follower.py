@@ -65,6 +65,29 @@ def test_features_and_arm_bus_without_gripper():
         assert robot.observation_features == {**dict.fromkeys(motors, float), "gripette": (4, 3, 3)}
 
 
+def test_passive_dry_run_does_not_enable_disable_torque_or_send_targets():
+    with _robot(passive=True) as robot:
+        robot.connect()
+        client = robot._gripper._client
+        controller = robot.arm.bus._controller
+        handles = list(robot.arm.bus._handles.values())
+        client.torque_on.assert_not_called()
+        for handle in handles:
+            handle.enable.assert_not_called()
+            handle.ensure_mode.assert_not_called()
+        with pytest.raises(RuntimeError, match="Passive"):
+            robot.send_action({"joint_1.pos": 10.0})
+        robot.disconnect()
+        controller.close_bus.assert_called_once()
+        controller.close.assert_called_once()
+        controller.shutdown.assert_not_called()
+        client.torque_off.assert_not_called()
+        client.move.assert_not_called()
+        for handle in handles:
+            handle.disable.assert_not_called()
+            handle.clear_error.assert_not_called()
+
+
 def test_prepare_manual_start_disables_torque_captures_pose_and_holds():
     robot = MagicMock()
     events = []

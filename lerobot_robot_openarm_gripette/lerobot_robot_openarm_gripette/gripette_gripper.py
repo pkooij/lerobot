@@ -58,15 +58,16 @@ class GripetteGripper:
     def is_connected(self) -> bool:
         return self._client is not None
 
-    def connect(self) -> None:
+    def connect(self, *, enable_torque: bool = True) -> None:
         self._client = GripperClient(self.addr)
         self._client.connect()
-        self._client.torque_on()
+        if enable_torque:
+            self._client.torque_on()
         self._stop.clear()
         self._has_frame.clear()
         threading.Thread(target=self._consume_stream, args=(self._client,), daemon=True).start()
         if not self._has_frame.wait(timeout=5.0):
-            self.disconnect(disable_torque=True)
+            self.disconnect(disable_torque=enable_torque)
             raise TimeoutError(f"No frame received from Gripette at {self.addr} within 5s.")
 
     def _consume_stream(self, client: GripperClient) -> None:
