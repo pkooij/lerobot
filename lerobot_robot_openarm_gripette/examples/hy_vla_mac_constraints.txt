@@ -1,0 +1,21 @@
+# Versions used for the recorded-input Apple MPS validation on 27 October 2026.
+# Apply with `uv pip install --constraint ...`; editable source packages are installed separately.
+accelerate==1.15.0
+av==15.1.0
+datasets==4.8.5
+draccus==0.11.6
+grpcio==1.85.0
+huggingface-hub==1.33.0
+numpy==2.2.6
+opencv-python-headless==4.13.0.92
+packaging==25.0
+pillow==12.3.0
+pin==3.4.0
+placo==0.9.15
+protobuf==7.36.2
+safetensors==0.8.0
+tokenizers==0.22.2
+torch==2.11.0
+torchcodec==0.11.1
+torchvision==0.26.0
+transformers==5.5.4

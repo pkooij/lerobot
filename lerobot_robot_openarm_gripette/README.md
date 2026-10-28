@@ -43,7 +43,15 @@ lerobot-teleoperate \
 The OpenArm leader and OpenArm Mini emit a single `gripper.pos` in degrees, so teleoperation
 drives the arm only until a gripper mapping is added.
 
-## Running a Grabette policy
+## Hy-VLA on an Apple silicon laptop
+
+Use [LAPTOP_SETUP.md](LAPTOP_SETUP.md) for the shareable installation and run instructions.
+It pins the public five-epoch Hy-VLA model and the Motorbridge PR #28 native PEAK backend,
+installs this plugin in its own environment, and starts with passive inference on the
+connected camera and joint telemetry. The Hy-VLA runner uses the saved gripper-centre
+current-relative processor convention and writes JSONL predictions.
+
+## Running an ACT Grabette policy
 
 `examples/run_grabette_policy.py` runs policies trained on handheld Grabette data with Cartesian
 pose-relative actions (LeRobot's `feat/cartesian-relative-actions`), e.g.
@@ -55,6 +63,7 @@ two Gripette motors with `gripette.grasp_projection`.
 ```bash
 pip install -e "lerobot_robot_openarm_gripette[policy]"
 python lerobot_robot_openarm_gripette/examples/run_grabette_rollout.py \
+    --policy CarolinePascal/grabette-pick-and-place-texture-act --checkpoint 070000 \
     --port can0 --gripette 172.18.7.107:50051 \
     --fps 10 --n_action_steps 10 --display_data --dry_run
 ```

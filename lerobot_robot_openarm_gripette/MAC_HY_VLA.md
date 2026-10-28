@@ -1,5 +1,8 @@
 # Grabette Hy-VLA on this Mac
 
+For installation on a colleague's laptop, use [LAPTOP_SETUP.md](LAPTOP_SETUP.md).
+The notes below record the original local validation setup.
+
 Public checkpoint: [pepijn223/hy-vla-umi-grabette-5epochs](https://huggingface.co/pepijn223/hy-vla-umi-grabette-5epochs),
 revision `088c73834a10ec22117458355de47ab6d488c3ff`. This is the validated final
 five-epoch checkpoint, with unchanged model tensors. It stores the checkpoint at

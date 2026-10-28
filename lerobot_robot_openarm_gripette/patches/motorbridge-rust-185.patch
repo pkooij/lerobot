@@ -1,0 +1,13 @@
+diff --git a/motor_core/src/pcan_usb_fd.rs b/motor_core/src/pcan_usb_fd.rs
+index d1bc859..11a2b47 100644
+--- a/motor_core/src/pcan_usb_fd.rs
++++ b/motor_core/src/pcan_usb_fd.rs
+@@ -109,7 +109,7 @@ impl BitTiming {
+             return Err(MotorError::InvalidArgument("bitrate must be > 0".into()));
+         }
+         for brp in 1u32..=1024 {
+-            if !CLOCK_HZ.is_multiple_of(brp * bitrate) {
++            if CLOCK_HZ % (brp * bitrate) != 0 {
+                 continue;
+             }
+             let ntq = CLOCK_HZ / (brp * bitrate);
