@@ -118,6 +118,32 @@ class AdamWConfig(OptimizerConfig):
         return torch.optim.AdamW(params, **kwargs)
 
 
+@OptimizerConfig.register_subclass("cautious_adamw")
+@dataclass
+class CautiousAdamWConfig(OptimizerConfig):
+    """AdamW that only moves a coordinate when the update agrees in sign with the gradient.
+
+    See `lerobot.optim.cautious.CautiousAdamW` (arXiv:2411.16085).
+    """
+
+    lr: float = 1e-3
+    betas: tuple[float, float] = (0.9, 0.999)
+    eps: float = 1e-8
+    weight_decay: float = 1e-2
+    grad_clip_norm: float = 10.0
+
+    def build(self, params: OptimizerParams) -> torch.optim.Optimizer:
+        from lerobot.optim.cautious import CautiousAdamW
+
+        return CautiousAdamW(
+            params,
+            lr=self.lr,
+            betas=self.betas,
+            eps=self.eps,
+            weight_decay=self.weight_decay,
+        )
+
+
 @OptimizerConfig.register_subclass("sgd")
 @dataclass
 class SGDConfig(OptimizerConfig):

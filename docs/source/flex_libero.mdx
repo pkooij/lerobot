@@ -1,0 +1,172 @@
+# FLEX on LIBERO: learning from practice
+
+This page reproduces Sereact's **FLEX** ("Flow Matching Learning from Experience") in simulation. In
+FLEX, a VLA fine-tuned on a few demonstrations keeps improving from its own attempts, with no human
+corrections. The method is described in the poster _FLEX: Adaptive Experience Replay for Sample-Efficient
+Flow Policy Gradients in Vision-Language-Action Models_ (Nguyen, Høeg, Tuscher; R2RL workshop, CoRL 2026)
+and in Sereact's [blog post](https://sereact.ai/posts/cortex-2-learns-from-practice). No code was
+released. Values the poster leaves out are marked _assumed_ below.
+
+## The loop
+
+FLEX extends the flow policy gradient of FPO++ ([arXiv:2602.02481](https://arxiv.org/abs/2602.02481)).
+It adds the components below, each aimed at a failure mode of on-policy RL when samples are scarce.
+Each iteration `c`:
+
+1. **Data collection.** The current policy `pi_theta_c` makes `episodes_per_task` attempts on every
+   task. The episode's success is the only reward.
+2. **Replay buffer.** The last `replay_window` iterations are kept. Data from `d` iterations ago has
+   weight `w = 2^(-d/h_s)`, where `h_s` is `staleness_half_life`.
+3. **Critic `V_phi`.** The critic is trained on the replay buffer to predict the discounted return `G`.
+   Its explained variance `E_c` gives a critic-quality scale `q_c = clip(E_c / E*, q_min, 1)`.
+4. **Advantages.** `A = G - V_phi(s)`, standardized within each task:
+   `Ā_i = (A_i - mu_task) / sigma_task`.
+5. **Actor update.** `L(theta) = q_c * L_PG(theta) + beta * E_demo[l_theta]`.
+   - `L_PG` is the FPO++ flow policy gradient. Each sampled state is evaluated at `n_mc` pairs
+     `(tau_i, eps_i)`. The per-pair ratio is `rho_i = exp(l_ref - l_theta)`, computed from conditional
+     flow-matching losses that use the same pair under both policies, and goes into PPO's clipped
+     surrogate.
+   - Transitions are sampled with probability proportional to `|Ā|`, mixed with a uniform
+     distribution.
+   - `l_theta` is a flow-matching (behavior-cloning) loss on the demonstrations.
+   - Updates use the **consensus** rule: a parameter moves only when its gradient agrees in sign
+     with Adam's first moment (Cautious AdamW, [arXiv:2411.16085](https://arxiv.org/abs/2411.16085)).
+
+| Component                                      | Here                                                               | Status         |
+| ---------------------------------------------- | ------------------------------------------------------------------ | -------------- |
+| replay buffer for actor and critic             | `replay_window=4`                                                  | size assumed   |
+| staleness weighting `2^(-d/h_s)`               | `staleness_half_life=1`, applied to sampling probabilities         | `h_s` assumed  |
+| critic-scaled PG loss `clip(E_c/E*, q_min, 1)` | `ev_target=0.5`, `q_min=0.1`, `E_c` measured out of fold           | values assumed |
+| per-task standardization                       | over the frames the actor trains on                                | as described   |
+| BC term `beta * E_demo[l_theta]`               | `beta=0.5`, flow-matching loss on `demos_per_task` demos per task  | `beta` assumed |
+| consensus update                               | Cautious AdamW, `lr=1e-5`, betas `(0.9, 0.95)`                     | as described   |
+| advantage-prioritized sampling                 | `(1 - u) * abs(Ā) / mean(abs(Ā)) + u`, `uniform_mix=0.5`           | `u` assumed    |
+| flow policy gradient                           | FPO++ per-pair ratios, PPO clip `0.05`, `n_mc=8`, summed CFM loss  | FPO++ defaults |
+| critic architecture                            | cross-fitted MLP over frozen ResNet-18 features, state, task, time | assumed        |
+| trust-region anchor                            | the policy at the start of each iteration's update                 | assumed        |
+
+Two implementation choices are worth knowing:
+
+- **Matched noise without touching the policy.** The ratio needs the reference and the current policy
+  to see the same noise and flow time. Both forwards start from the same RNG seed, so any policy with
+  `forward(batch, reduction="none")` works. On SmolVLA, the ratio against an identical copy is exactly 1.
+- **Executed actions only.** The policy replans every `n_action_steps` (`H`) steps. In `L_PG`, only
+  the first `H` steps of each chunk count as the action; the rest are masked. The demo BC term uses
+  the whole chunk.
+
+## Baselines and ablations
+
+The same practice data can be learned from in four ways, chosen with `--mode`:
+
+- `flex`: the loop above.
+- `fpo`: the FPO++ baseline. This is FLEX with every component removed: on-policy only, `q_c = 1`, no
+  BC term, uniform sampling, advantages standardized over all tasks together, and plain AdamW.
+- `filtered_bc`: flow matching on demos plus successful attempts (rejection-sampling fine-tuning).
+- `recap`: advantage-conditioned flow matching in the spirit of pi\*0.6's RECAP. Each practice frame's
+  instruction gets ` Advantage: positive.` (top `recap_positive_frac` by advantage) or
+  ` Advantage: negative.`. At test time the policy is prompted "positive".
+
+The poster's ablations on LIBERO-Spatial are given against the full method, which reaches 72.5%
+success. Each ablation maps to one flag:
+
+| Ablation (poster, Δ success)             | Flag                           |
+| ---------------------------------------- | ------------------------------ |
+| no replay for the actor (−8.2)           | `--actor_replay=false`         |
+| no replay for the critic (−8.5)          | `--critic_replay=false`        |
+| no critic-scaled PG loss (−8.2)          | `--critic_scaling=false`       |
+| no staleness weighting (−7.1)            | `--staleness_half_life=0`      |
+| no per-task standardization (−6.0)       | `--per_task_std=false`         |
+| no behavior-cloning term (−5.7)          | `--beta=0`                     |
+| no consensus update (−3.0)               | `--optimizer=adamw`            |
+| no advantage-prioritized sampling (−5.5) | `--prioritized_sampling=false` |
+
+## Setup
+
+FLEX needs LIBERO, which only runs on Linux, and a GPU. On a Linux GPU machine:
+
+```bash
+pip install -e ".[libero,smolvla]"
+export MUJOCO_GL=egl
+```
+
+### 1. A starting policy with room to improve
+
+A SmolVLA fine-tuned on all LIBERO demos already solves most tasks. Instead, start from a **few-shot**
+SFT run on one suite, as the poster does. First pick the demos. The same selection, with the same
+`--seed`, becomes FLEX's demo set:
+
+```bash
+EPISODES=$(python -m lerobot.rl.flex.select_demos --suite libero_spatial --demos_per_task 10 --seed 1000)
+```
+
+```bash
+lerobot-train \
+  --policy.type=smolvla --policy.load_vlm_weights=true \
+  --policy.repo_id=${HF_USER}/smolvla_libero_spatial_10demos \
+  --dataset.repo_id=lerobot/libero --dataset.episodes="${EPISODES}" \
+  --steps=20000 --batch_size=64 \
+  --output_dir=outputs/sft_libero_spatial_10demos
+```
+
+Evaluate it with `lerobot-eval --env.type=libero --env.task=libero_spatial --eval.n_episodes=50`. Aim
+for 30-60% success, which leaves room to improve. If success is higher, use fewer demos per task. If it
+is lower, use more.
+
+### 2. Practice
+
+```bash
+python -m lerobot.rl.flex.train_flex \
+  --policy.path=${HF_USER}/smolvla_libero_spatial_10demos \
+  --policy.n_action_steps=10 \
+  --env.type=libero --env.task=libero_spatial \
+  --demos_per_task=10 --seed=1000 \
+  --mode=flex --rounds=10 --episodes_per_task=5 \
+  --steps_per_round=500 --batch_size=16 --n_mc=8 \
+  --eval_every=5 --eval_episodes_per_task=50
+```
+
+`--episodes_per_task=5` on LIBERO's 10 tasks gives the poster's 50 trials per cycle. Each update step
+runs the policy on `batch_size * n_mc` samples, plus a reference forward without gradients and a demo
+batch. If the ratios explode (`pg/clip_frac` near 1 from the first steps), try
+`--loss_reduction=mean`. It averages the flow-matching loss over the chunk instead of summing it.
+
+Outputs in `--output_dir`:
+
+- `metrics.jsonl`: one line per iteration. Each line has:
+  - practice success rate and the mean length of successful attempts
+  - the critic's explained variance, `q_c` and within-task AUROC
+  - replay-buffer and sampling statistics
+  - PG ratio and clip-fraction statistics, and the BC loss
+  - the cautious-gate kept fraction
+  - eval success with its 95% interval
+- `practice/round_XXX/`: each iteration's attempts as a LeRobotDataset, plus `flex_episodes.json`.
+- `checkpoints/round_XXX/pretrained_model/`: a policy you can pass to `lerobot-eval`.
+
+Run `--mode=fpo`, `--mode=filtered_bc` and `--mode=recap` with the same arguments to compare learning
+rules from the same starting point.
+
+### Running on HF Jobs
+
+The FLEX loop is not in the released `lerobot-gpu` image yet. Run it from a branch that contains it,
+and pass your Hub token as a secret:
+
+```bash
+hf jobs run --flavor a100-large --secrets HF_TOKEN -e MUJOCO_GL=egl \
+  pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel \
+  bash -c 'apt-get update && apt-get install -y git libegl1 libgl1 ffmpeg && \
+    pip install "lerobot[libero,smolvla] @ git+https://github.com/<you>/lerobot@<branch>" && \
+    python -m lerobot.rl.flex.train_flex --policy.path=<user>/smolvla_libero_spatial_10demos ...'
+```
+
+The SFT stage in step 1 can use `lerobot-train --job.target=<flavor>` directly.
+
+## Reporting
+
+The poster reports the change in success rate over the SFT base (+7.2 pp for FLEX on few-shot LIBERO,
+with pi0.5). LIBERO evaluation is noisy:
+
+- Use 50 episodes per task.
+- Keep the seed fixed across methods.
+- Report the Wilson interval that `metrics.jsonl` stores next to every success rate.
+
+Two runs whose intervals overlap have not been shown to differ.

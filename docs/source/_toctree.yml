@@ -19,6 +19,8 @@
     title: Train a Robot with RL
   - local: hilserl_sim
     title: Train RL in Simulation
+  - local: flex_libero
+    title: Learn from Practice (FLEX)
   - local: multi_gpu_training
     title: Multi GPU training
   - local: hil_data_collection
