@@ -276,3 +276,24 @@ def test_instruction_wrapper_rewrites_tasks():
     assert seen["task"] == ["open the drawer Advantage: positive."]
     wrapped.reset()
     assert seen["reset"]
+
+
+def test_cli_entry_point_parses_flex_config():
+    """`parser.wrap` reads the config class from the annotation, so it must be a class, not a string."""
+    import inspect
+
+    import draccus
+
+    from lerobot.rl.flex import train_flex as train_flex_module
+
+    assert inspect.signature(train_flex_module.train_flex).parameters["cfg"].annotation is FlexConfig
+    # --env.type resets the env to LIBERO's defaults (360 px), so FLEX commands pass the render size too.
+    args = ["--mode=fpo", "--rounds=2", "--env.type=libero", "--env.task=libero_spatial"]
+    args += ["--env.observation_height=256", "--env.observation_width=256"]
+    cfg = draccus.parse(FlexConfig, args=args)
+    assert (cfg.mode, cfg.rounds, cfg.env.task, cfg.env.observation_height) == (
+        "fpo",
+        2,
+        "libero_spatial",
+        256,
+    )

@@ -116,8 +116,9 @@ class FlexConfig:
     # Clip range of the PPO surrogate; "aspo" uses FPO++'s quadratic penalty for negative advantages.
     clip_eps: float = 0.05
     surrogate: str = "ppo"
-    # CFM loss per sample in the ratio and BC term: "sum" over chunk steps and action dims (FPO++), or "mean".
-    loss_reduction: str = "sum"
+    # CFM loss per sample in the ratio and BC term: "mean" over chunk steps and action dims, or "sum" (FPO++).
+    # On SmolVLA/LIBERO, "sum" pushed 83% of ratios out of the 0.05 clip within 10 steps; "mean" gave 16%.
+    loss_reduction: str = "mean"
     # Weight of the behavior-cloning term on demos; 0 disables it (ablation).
     beta: float = 0.5
     demo_batch_size: int = 16

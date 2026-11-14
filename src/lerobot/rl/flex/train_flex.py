@@ -29,10 +29,9 @@ Example (after the SFT stage, see docs/source/flex_libero.mdx):
 
     python -m lerobot.rl.flex.train_flex \\
         --policy.path=<user>/smolvla_libero_spatial_10demos --policy.n_action_steps=10 \\
-        --env.type=libero --env.task=libero_spatial --demos_per_task=10 --rounds=10 --episodes_per_task=5
+        --env.type=libero --env.task=libero_spatial --env.observation_height=256 --env.observation_width=256 \\
+        --demos_per_task=10 --rounds=10 --episodes_per_task=5
 """
-
-from __future__ import annotations
 
 import copy
 import json
@@ -495,11 +494,12 @@ def train_flex(cfg: FlexConfig) -> None:
     # --- Envs, policy, processors ---
     practice_envs = make_env(cfg.env, n_envs=cfg.episodes_per_task, use_async_envs=cfg.use_async_envs)
     env_pre, env_post = make_env_pre_post_processors(env_cfg=cfg.env, policy_cfg=cfg.policy)
-    task_descriptions = {
-        f"{suite}/{tid}": list(env.call("task_description"))[0]
-        for suite, tasks in practice_envs.items()
-        for tid, env in tasks.items()
-    }
+    task_descriptions = {}
+    for suite, tasks in practice_envs.items():
+        for tid, env in tasks.items():
+            # Sim envs only report their task description after a reset.
+            env.reset(seed=cfg.seed)
+            task_descriptions[f"{suite}/{tid}"] = list(env.call("task_description"))[0]
     max_steps = {
         f"{suite}/{tid}": int(env.call("_max_episode_steps")[0])
         for suite, tasks in practice_envs.items()

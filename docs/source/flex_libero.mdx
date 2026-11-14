@@ -41,7 +41,7 @@ Each iteration `c`:
 | BC term `beta * E_demo[l_theta]`               | `beta=0.5`, flow-matching loss on `demos_per_task` demos per task  | `beta` assumed |
 | consensus update                               | Cautious AdamW, `lr=1e-5`, betas `(0.9, 0.95)`                     | as described   |
 | advantage-prioritized sampling                 | `(1 - u) * abs(Ā) / mean(abs(Ā)) + u`, `uniform_mix=0.5`           | `u` assumed    |
-| flow policy gradient                           | FPO++ per-pair ratios, PPO clip `0.05`, `n_mc=8`, summed CFM loss  | FPO++ defaults |
+| flow policy gradient                           | FPO++ per-pair ratios, PPO clip `0.05`, `n_mc=8`, mean CFM loss    | see below      |
 | critic architecture                            | cross-fitted MLP over frozen ResNet-18 features, state, task, time | assumed        |
 | trust-region anchor                            | the policy at the start of each iteration's update                 | assumed        |
 
@@ -53,6 +53,10 @@ Two implementation choices are worth knowing:
 - **Executed actions only.** The policy replans every `n_action_steps` (`H`) steps. In `L_PG`, only
   the first `H` steps of each chunk count as the action; the rest are masked. The demo BC term uses
   the whole chunk.
+- **Averaged, not summed, CFM loss.** FPO++ sums the flow-matching loss over the action. On SmolVLA
+  the summed loss is so large that 10 update steps pushed 83% of the ratios outside the `0.05` clip
+  range (mean absolute log ratio 1.7), which leaves the policy gradient almost no effect. Averaging
+  over chunk steps and action dims (`--loss_reduction=mean`, the default) gave 16% (log ratio 0.03).
 
 ## Baselines and ablations
 
@@ -108,7 +112,7 @@ lerobot-train \
   --output_dir=outputs/sft_libero_spatial_10demos
 ```
 
-Evaluate it with `lerobot-eval --env.type=libero --env.task=libero_spatial --eval.n_episodes=50`. Aim
+Evaluate it with `lerobot-eval --env.type=libero --env.task=libero_spatial --env.observation_height=256 --env.observation_width=256 --eval.n_episodes=50`. Aim
 for 30-60% success, which leaves room to improve. If success is higher, use fewer demos per task. If it
 is lower, use more.
 
@@ -119,6 +123,7 @@ python -m lerobot.rl.flex.train_flex \
   --policy.path=${HF_USER}/smolvla_libero_spatial_10demos \
   --policy.n_action_steps=10 \
   --env.type=libero --env.task=libero_spatial \
+  --env.observation_height=256 --env.observation_width=256 \
   --demos_per_task=10 --seed=1000 \
   --mode=flex --rounds=10 --episodes_per_task=5 \
   --steps_per_round=500 --batch_size=16 --n_mc=8 \
@@ -127,8 +132,8 @@ python -m lerobot.rl.flex.train_flex \
 
 `--episodes_per_task=5` on LIBERO's 10 tasks gives the poster's 50 trials per cycle. Each update step
 runs the policy on `batch_size * n_mc` samples, plus a reference forward without gradients and a demo
-batch. If the ratios explode (`pg/clip_frac` near 1 from the first steps), try
-`--loss_reduction=mean`. It averages the flow-matching loss over the chunk instead of summing it.
+batch. Watch `pg/clip_frac` in `metrics.jsonl`: if it is near 1, the ratios have left the trust region
+and the policy gradient has little effect; lower `--lr` or `--steps_per_round`.
 
 Outputs in `--output_dir`:
 
