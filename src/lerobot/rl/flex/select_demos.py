@@ -22,7 +22,9 @@ Print it for `lerobot-train --dataset.episodes=...`:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import re
+import sys
 from collections.abc import Iterable, Sequence
 
 import numpy as np
@@ -99,12 +101,15 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=1000, help="Must match FLEX's --seed.")
     args = parser.parse_args()
 
-    episodes = select_demo_episodes(
-        episode_task_strings(args.repo_id, args.revision),
-        libero_task_descriptions(args.suite),
-        args.demos_per_task,
-        args.seed,
-    )
+    # LIBERO prints "[info] ..." to stdout on import; keep stdout to the episode list so that
+    # EPISODES=$(python -m lerobot.rl.flex.select_demos ...) can be passed straight to lerobot-train.
+    with contextlib.redirect_stdout(sys.stderr):
+        episodes = select_demo_episodes(
+            episode_task_strings(args.repo_id, args.revision),
+            libero_task_descriptions(args.suite),
+            args.demos_per_task,
+            args.seed,
+        )
     print("[" + ",".join(str(e) for e in episodes) + "]")
 
 
