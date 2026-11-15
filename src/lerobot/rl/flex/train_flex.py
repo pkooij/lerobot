@@ -149,6 +149,21 @@ def _in_use(mem_round: int, current_round: int, replay: bool) -> bool:
     return replay or mem_round == current_round
 
 
+def actor_frames(mem: MemoryRound, cfg: FlexConfig, horizon: int) -> np.ndarray:
+    """Frames of one round the actor learns from, in dataset position order.
+
+    The policy samples a chunk every ``horizon`` steps (from ``policy.reset()`` at frame 0) and executes its
+    first ``horizon`` actions. Only at those frames is the recorded ``horizon``-step action a sample of
+    ``pi(. | s_t)``; anywhere else it is the tail of one chunk joined to the head of the next, which was
+    sampled from a later observation. The policy gradient therefore uses the chunk-start frames only. The
+    supervised modes imitate the executed trajectory and keep every frame.
+    """
+    frame_index = np.asarray(mem.features.frame_index)
+    if cfg.mode not in PG_MODES or horizon <= 1:
+        return np.ones(len(frame_index), dtype=bool)
+    return frame_index % horizon == 0
+
+
 def judge(
     memory: list[MemoryRound],
     cfg: FlexConfig,
@@ -156,8 +171,10 @@ def judge(
     max_steps: dict[str, int],
     current_round: int,
     device: torch.device,
+    horizon: int,
 ) -> tuple[list[np.ndarray], float, dict[str, float]]:
-    """Fit the critic, return per-round standardized advantages ``A = G - V``, ``q_c`` and stats."""
+    """Fit the critic (on every frame), return per-round standardized advantages ``A = G - V``, ``q_c`` and
+    stats. Advantages are standardized over the frames the actor learns from (see `actor_frames`)."""
     image, state, task_ids, time_frac, returns, weights, ep_ids, outcome, critic_on, actor_on = (
         [] for _ in range(10)
     )
@@ -179,8 +196,8 @@ def judge(
             ep_ids.append(np.full(n, ep_counter))
             outcome.append(np.full(n, rec.success))
             critic_on.append(np.full(n, use_critic))
-            actor_on.append(np.full(n, use_actor))
             ep_counter += 1
+        actor_on.append(actor_frames(mem, cfg, horizon) & use_actor)
 
     task_ids_a = np.concatenate(task_ids)
     returns_a = np.concatenate(returns)
@@ -249,16 +266,17 @@ def build_loaders(
     round_adv: list[np.ndarray],
     current_round: int,
     keys: list[str],
+    horizon: int,
 ) -> tuple[torch.utils.data.DataLoader | None, torch.utils.data.DataLoader | None, dict[str, float]]:
-    """Practice loader (replay, sampled by staleness x advantage priority) and demo loader, each sized for
-    one iteration of ``steps_per_round`` updates."""
+    """Practice loader (replay, sampled by staleness x advantage priority over `actor_frames`) and demo
+    loader, each sized for one iteration of ``steps_per_round`` updates."""
     used = [
         (mem, a)
         for mem, a in zip(memory, round_adv, strict=True)
         if _in_use(mem.round, current_round, cfg.actor_replay)
     ]
     views: list[torch.utils.data.Dataset] = []
-    stale_l, adv_l, success_l = [], [], []
+    stale_l, adv_l, success_l, frames_l = [], [], [], []
     all_adv = np.concatenate([a for _, a in used])
     threshold = np.quantile(all_adv, 1.0 - cfg.recap_positive_frac) if cfg.mode == "recap" else 0.0
     for mem, a in used:
@@ -270,9 +288,15 @@ def build_loaders(
         stale_l.append(np.full(len(a), stale))
         adv_l.append(a)
         success_l.append(np.concatenate([np.full(r.length, r.success) for r in mem.records]))
+        frames_l.append(actor_frames(mem, cfg, horizon))
     stale_a = np.concatenate(stale_l)
+    frames_a = np.concatenate(frames_l)
     if cfg.mode in PG_MODES:
-        probs = adv.sampling_probs(np.concatenate(adv_l), stale_a, cfg.uniform_mix, cfg.prioritized_sampling)
+        # Priorities are normalized over the frames that can be drawn.
+        probs = np.zeros(len(frames_a))
+        probs[frames_a] = adv.sampling_probs(
+            np.concatenate(adv_l)[frames_a], stale_a[frames_a], cfg.uniform_mix, cfg.prioritized_sampling
+        )
     elif cfg.mode == "filtered_bc":
         probs = stale_a * np.concatenate(success_l)
     else:  # recap
@@ -313,6 +337,7 @@ def build_loaders(
     p = probs / probs.sum() if probs.sum() > 0 else probs
     stats = {
         "buffer/frames": float(len(probs)),
+        "buffer/actor_frames": float(frames_a.sum()),
         "buffer/rounds": float(len(used)),
         "sample/ess_frac": float(1.0 / (len(p) * (p**2).sum())) if p.sum() > 0 else 0.0,
         "sample/current_round_mass": float(p[-len(adv_l[-1]) :].sum()) if p.sum() > 0 else 0.0,
@@ -584,12 +609,12 @@ def train_flex(cfg: FlexConfig) -> None:
         memory = memory[-window:]
 
         # 3. Critic and 4. advantages
-        round_adv, q_c, judge_stats = judge(memory, cfg, task_index, max_steps, r, device)
+        round_adv, q_c, judge_stats = judge(memory, cfg, task_index, max_steps, r, device, horizon)
         metrics.update(judge_stats)
 
         # 5. Actor update
         practice_loader, demo_loader, mix_stats = build_loaders(
-            cfg, demo_ds, memory, round_adv, r, train_keys
+            cfg, demo_ds, memory, round_adv, r, train_keys, horizon
         )
         metrics.update(mix_stats)
         if reference is not None:

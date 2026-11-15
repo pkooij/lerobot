@@ -35,6 +35,7 @@ from lerobot.rl.flex.train_flex import (  # noqa: E402
     RECAP_POSITIVE,
     InstructionWrapper,
     MemoryRound,
+    actor_frames,
     build_loaders,
     improve,
     judge,
@@ -219,19 +220,36 @@ def test_one_round_judge_and_improve(tmp_path, demo_features, mode):
         use_amp=False,
     )
     cfg.check()
+    horizon = 2
     round_adv, q_c, stats = judge(
-        memory, cfg, {"fake/0": 0}, {"fake/0": MAX_STEPS}, current_round=0, device=torch.device("cpu")
+        memory,
+        cfg,
+        {"fake/0": 0},
+        {"fake/0": MAX_STEPS},
+        current_round=0,
+        device=torch.device("cpu"),
+        horizon=horizon,
     )
     assert round_adv[0].shape == (len(memory[0].train_ds),)
     assert cfg.q_min <= q_c <= 1.0 if cfg.critic_scaling else q_c == 1.0
-    assert abs(float(round_adv[0].mean())) < 1e-4  # standardized within the (single) task
+    # Standardized within the (single) task, over the frames the actor learns from.
+    learn = actor_frames(memory[0], cfg, horizon)
+    assert abs(float(round_adv[0][learn].mean())) < 1e-4
 
     # The practice dataset doubles as the demo buffer here; only the keys matter.
     demo_ds = LeRobotDataset(repo_id, root=root, delta_timestamps=delta)
     practice_loader, demo_loader, mix = build_loaders(
-        cfg, demo_ds, memory, round_adv, 0, [CAM, OBS_STATE, ACTION]
+        cfg, demo_ds, memory, round_adv, 0, [CAM, OBS_STATE, ACTION], horizon
     )
     assert practice_loader is not None
+    # The policy gradient only sees frames where the policy sampled a chunk.
+    weights = np.asarray(practice_loader.sampler.weights)
+    chunk_start = features.frame_index % horizon == 0
+    if mode in ("flex", "fpo"):
+        assert (weights[~chunk_start] == 0).all() and (weights[chunk_start] > 0).all()
+        assert mix["buffer/actor_frames"] == chunk_start.sum()
+    else:
+        assert mix["buffer/actor_frames"] == len(chunk_start)
     assert (demo_loader is None) == (mode == "fpo")  # FPO++ has no BC term
     batch = next(iter(practice_loader))
     assert set(batch) >= {CAM, OBS_STATE, ACTION, "action_is_pad", "task", "flex_adv"}

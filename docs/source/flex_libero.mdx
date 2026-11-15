@@ -50,9 +50,12 @@ Two implementation choices are worth knowing:
 - **Matched noise without touching the policy.** The ratio needs the reference and the current policy
   to see the same noise and flow time. Both forwards start from the same RNG seed, so any policy with
   `forward(batch, reduction="none")` works. On SmolVLA, the ratio against an identical copy is exactly 1.
-- **Executed actions only.** The policy replans every `n_action_steps` (`H`) steps. In `L_PG`, only
-  the first `H` steps of each chunk count as the action; the rest are masked. The demo BC term uses
-  the whole chunk.
+- **Executed actions only, at chunk starts.** The policy samples a chunk every `n_action_steps` (`H`)
+  steps and executes its first `H` actions. `L_PG` therefore trains only on the frames where a chunk
+  was sampled (`t % H == 0`), with the first `H` steps as the action and the rest masked. At any other
+  frame, the next `H` recorded actions join the end of one chunk to the start of the next, which was
+  sampled from a later observation; on LIBERO the action jumps 2.4x more at those joins than within a
+  chunk. The critic still uses every frame, and the demo BC term uses the whole chunk.
 - **Averaged, not summed, CFM loss.** FPO++ sums the flow-matching loss over the action. On SmolVLA
   the summed loss is so large that 10 update steps pushed 83% of the ratios outside the `0.05` clip
   range (mean absolute log ratio 1.7), which leaves the policy gradient almost no effect. Averaging
