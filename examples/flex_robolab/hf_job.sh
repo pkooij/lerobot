@@ -83,7 +83,7 @@ stamp "Isaac env (background) and LeRobot env"
   VIRTUAL_ENV=/opt/isaac uv pip install -q --no-deps -e ${WORK}/lerobot
   VIRTUAL_ENV=/opt/isaac uv pip install -q draccus termcolor "eclipse-zenoh==1.10.1" msgpack pyyaml
   # Isaac Lab pins huggingface-hub<1.0; LeRobot's utils import download_bucket_files (hub >= 1.x).
-  VIRTUAL_ENV=/opt/isaac uv pip install -q --no-deps "huggingface-hub==1.33.0"
+  VIRTUAL_ENV=/opt/isaac uv pip install -q "huggingface-hub==1.33.0"
   /opt/isaac/bin/python -c "import lerobot.env_server.server, lerobot.sim.integrations.robolab"
 ) >"${OUT}/isaac_install.log" 2>&1 &
 ISAAC_INSTALL=$!
