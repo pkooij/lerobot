@@ -102,7 +102,7 @@ cat >${WORK}/robolab_server.yaml <<EOF
 deployment: robolab
 sim:
   type: robolab
-  task: "${TASKS%%,*}"
+  task: "${TASKS}"
   kwargs:
     cameras: WRIST_LEFT
     instruction_type: default

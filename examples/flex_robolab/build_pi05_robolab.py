@@ -19,8 +19,8 @@ The checkpoint's weights already use openpi's PyTorch names, which `PI05Policy.f
 What it lacks is a LeRobot config and normalization stats:
 
 - cameras: RoboLab's ``over_shoulder_left_camera`` is openpi's base camera and ``wrist_cam`` its left
-  wrist camera; the right-wrist slot is declared but never sent, so pi05 fills it with a masked blank image
-  (as RLinf does);
+  wrist camera; the right-wrist slot is pi05's placeholder camera (``empty_cameras=1``), a masked blank
+  image (as RLinf does);
 - state / action: 7 joint positions (rad) + gripper (0 open, 1 closed), quantile-normalized with the first 8
   dims of the checkpoint's ``norm_stats.json``;
 - actions are trained relative to the state for the 7 joints (openpi ``DeltaActions``), gripper absolute;
@@ -44,7 +44,7 @@ from lerobot.policies.pi05.processor_pi05 import make_pi05_pre_post_processors
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
 
 SOURCE = "RLinf/RLinf-Pi05-RoboLab-droid-jointpos"
-CAMERAS = ["over_shoulder_left_camera", "wrist_cam", "right_wrist_0_rgb"]  # base, left wrist, right wrist
+CAMERAS = ["over_shoulder_left_camera", "wrist_cam"]  # base, left wrist (right wrist: empty_cameras)
 JOINT_NAMES = [f"joint_{i}" for i in range(7)] + ["gripper"]
 DIM = 8
 
@@ -57,6 +57,7 @@ def build_config(device: str) -> PI05Config:
             OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(DIM,)),
         },
         output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(DIM,))},
+        empty_cameras=1,
         chunk_size=15,
         n_action_steps=15,
         num_inference_steps=10,
