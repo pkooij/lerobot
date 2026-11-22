@@ -52,14 +52,15 @@ stamp "GPU and graphics driver files"
 nvidia-smi
 # Isaac Sim renders through Vulkan: the NVIDIA ICD must be visible (NVIDIA_DRIVER_CAPABILITIES=all mounts it).
 # Only when no NVIDIA ICD is there yet: two ICDs for one GPU make Isaac Sim unstable.
-if ! ls /etc/vulkan/icd.d/nvidia* /usr/share/vulkan/icd.d/nvidia* >/dev/null 2>&1 \
+any_exists() { for p in "$@"; do [[ -e $p ]] && return 0; done; return 1; }
+if ! any_exists /etc/vulkan/icd.d/nvidia* /usr/share/vulkan/icd.d/nvidia* \
     && ldconfig -p | grep -q libGLX_nvidia.so.0; then
   mkdir -p /usr/share/vulkan/icd.d
   echo '{"file_format_version":"1.0.0","ICD":{"library_path":"libGLX_nvidia.so.0","api_version":"1.3"}}' \
     >/usr/share/vulkan/icd.d/nvidia_icd.json
   echo "wrote the NVIDIA Vulkan ICD file"
 fi
-if ! ls /etc/glvnd/egl_vendor.d/*nvidia* /usr/share/glvnd/egl_vendor.d/*nvidia* >/dev/null 2>&1 \
+if ! any_exists /etc/glvnd/egl_vendor.d/*nvidia* /usr/share/glvnd/egl_vendor.d/*nvidia* \
     && ldconfig -p | grep -q libEGL_nvidia.so.0; then
   mkdir -p /usr/share/glvnd/egl_vendor.d
   echo '{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}' \
