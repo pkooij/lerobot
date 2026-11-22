@@ -39,7 +39,8 @@ class EpisodeRecord:
     round: int  # practice round (FLEX iteration) that produced it
     task_key: str  # e.g. "libero_spatial/3"
     success: bool
-    length: int
+    length: int  # recorded frames
+    stride: int = 1  # env steps per recorded frame (n_action_steps when only chunk starts are recorded)
 
 
 def value_targets(length: int, success: bool, gamma: float) -> np.ndarray:

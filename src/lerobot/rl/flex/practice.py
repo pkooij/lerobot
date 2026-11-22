@@ -51,6 +51,36 @@ def practice_features(demo_features: dict[str, dict], camera_keys: list[str], st
     return features
 
 
+ACTION_IS_PAD = "action_is_pad"
+
+
+def chunk_features(features: dict[str, dict], chunk: int) -> dict:
+    """Store a whole executed chunk per frame: ``action`` flattened to ``chunk * action_dim`` values, and
+    ``action_is_pad`` (1.0 for steps after the episode ended, filled with the last action)."""
+    out = dict(features)
+    (action_dim,) = tuple(out[ACTION]["shape"])
+    out[ACTION] = {"dtype": "float32", "shape": (chunk * action_dim,), "names": None}
+    out[ACTION_IS_PAD] = {"dtype": "float32", "shape": (chunk,), "names": None}
+    return out
+
+
+def env_practice_features(observation: dict[str, Any], action_dim: int) -> dict:
+    """Practice features read off one (batched) env observation, for runs without a demo dataset."""
+    features: dict[str, dict] = {}
+    for key, value in observation.items():
+        arr = np.asarray(value)[0]
+        if arr.ndim == 3 and arr.dtype == np.uint8:
+            features[key] = {
+                "dtype": "image",
+                "shape": tuple(arr.shape),
+                "names": ["height", "width", "channels"],
+            }
+        elif arr.ndim == 1:
+            features[key] = {"dtype": "float32", "shape": tuple(arr.shape), "names": None}
+    features[ACTION] = {"dtype": "float32", "shape": (action_dim,), "names": None}
+    return features
+
+
 def create_practice_dataset(root: Path, round_idx: int, fps: int, features: dict) -> LeRobotDataset:
     return LeRobotDataset.create(
         repo_id=f"flex/practice_round_{round_idx:03d}",
@@ -90,8 +120,12 @@ def practice_task(
     round_idx: int,
     record_keys: list[str],
     instruction_fn: Callable[[str], str] | None = None,
+    chunk: int = 0,
 ) -> list[EpisodeRecord]:
-    """Run one batch of attempts (one per sub-env) on one task and append them to ``dataset``."""
+    """Run one batch of attempts (one per sub-env) on one task and append them to ``dataset``.
+
+    ``chunk > 0`` records only every ``chunk``-th frame (the chunk starts), each with the ``chunk`` actions
+    executed from it (see `chunk_features`)."""
     if not env.metadata.get("canonical_observations", False):
         raise ValueError("FLEX practice needs an env with canonical observations (e.g. LIBERO).")
     policy.eval()
@@ -119,11 +153,17 @@ def practice_task(
         action_np = action.to("cpu").numpy()
 
         for i in np.nonzero(~done)[0]:
+            if chunk and step % chunk:
+                buffers[i][-1]["_actions"].append(action_np[i].astype(np.float32))
+                continue
             frame = {}
             for key in record_keys:
                 value = np.asarray(raw[key][i])
                 frame[key] = value.astype(np.float32) if value.dtype == np.float64 else value
-            frame[ACTION] = action_np[i].astype(np.float32)
+            if chunk:
+                frame["_actions"] = [action_np[i].astype(np.float32)]
+            else:
+                frame[ACTION] = action_np[i].astype(np.float32)
             buffers[i].append(frame)
 
         observation, _, terminated, truncated, info = env.step(env_action.to("cpu").numpy())
@@ -139,6 +179,13 @@ def practice_task(
     records = []
     for i in range(n):
         for frame in buffers[i]:
+            if chunk:
+                acts = frame.pop("_actions")
+                pad = np.zeros(chunk, dtype=np.float32)
+                pad[len(acts) :] = 1.0
+                acts = acts + [acts[-1]] * (chunk - len(acts))
+                frame[ACTION] = np.stack(acts).reshape(-1)
+                frame[ACTION_IS_PAD] = pad
             dataset.add_frame({**frame, "task": task})
         dataset.save_episode()
         records.append(
@@ -148,6 +195,7 @@ def practice_task(
                 task_key=task_key,
                 success=bool(success[i]),
                 length=len(buffers[i]),
+                stride=chunk or 1,
             )
         )
     logger.info(
@@ -165,19 +213,22 @@ def practice_round(
     dataset: LeRobotDataset,
     round_idx: int,
     record_keys: list[str],
+    batches_per_task: int = 1,
     **kwargs: Any,
 ) -> list[EpisodeRecord]:
-    """Practice every task once (``num_envs`` attempts each). Records are in dataset episode order."""
+    """Practice every task ``batches_per_task`` times (``num_envs`` attempts each). Records are in dataset
+    episode order. Each batch resets the envs, so the attempts start from different init states."""
     records: list[EpisodeRecord] = []
     for suite, tasks in envs.items():
         for task_id, env in tasks.items():
-            records += practice_task(
-                env,
-                f"{suite}/{task_id}",
-                dataset=dataset,
-                round_idx=round_idx,
-                record_keys=record_keys,
-                **kwargs,
-            )
+            for _ in range(batches_per_task):
+                records += practice_task(
+                    env,
+                    f"{suite}/{task_id}",
+                    dataset=dataset,
+                    round_idx=round_idx,
+                    record_keys=record_keys,
+                    **kwargs,
+                )
     dataset.finalize()
     return records

@@ -62,7 +62,9 @@ class FlexConfig:
     mode: str = "flex"
 
     # --- Demonstrations (D_demo, fixed) ---
-    demo_repo_id: str = "lerobot/libero"
+    # None: no demos. Needs a policy-gradient mode with beta=0 and record_chunks; the practice schema then
+    # comes from the env's observations.
+    demo_repo_id: str | None = "lerobot/libero"
     demo_revision: str | None = None
     # Demos per task drawn for the env's tasks. Use the same value (and seed) as the SFT run that produced
     # --policy.path, see `python -m lerobot.rl.flex.select_demos`.
@@ -75,7 +77,16 @@ class FlexConfig:
     rounds: int = 10
     # Attempts per task per iteration. 5 x 10 LIBERO tasks = the poster's 50 trials per cycle.
     episodes_per_task: int = 5
+    # Simulators run in parallel per task (0 = episodes_per_task). Each one holds a GPU render context and
+    # every task keeps its own, so 20 x 10 LIBERO tasks runs the H100 out of memory; 5 runs 20 in 4 batches.
+    practice_envs_per_task: int = 0
     use_async_envs: bool = False
+    # Record only the frames where the policy samples a chunk (every n_action_steps), each with the chunk of
+    # actions it executed. The policy gradient only uses those frames, and long episodes (RoboLab: up to
+    # 4,500 steps) would otherwise store every camera frame. The critic then sees one frame per chunk.
+    record_chunks: bool = False
+    # Evaluate on the practice envs instead of building new ones (served envs allow one session at a time).
+    eval_reuse_practice_envs: bool = False
 
     # --- 2. Replay buffer ---
     # Iterations kept in the replay window P_c (the current one plus replay_window - 1 older ones).
@@ -103,6 +114,9 @@ class FlexConfig:
     # --- 4. Advantages ---
     # Ablation "per-task standardization": standardize over all tasks at once instead.
     per_task_std: bool = True
+    # No policy gradient for a task whose actor window has only successes or only failures: its advantages
+    # are critic noise, which per-task standardization would scale up. Not in the poster (ours).
+    require_contrast: bool = True
     # p_i ~ (1 - uniform_mix) * |A_i| / mean|A| + uniform_mix. Ablation: uniform sampling.
     prioritized_sampling: bool = True
     uniform_mix: float = 0.5
@@ -117,7 +131,8 @@ class FlexConfig:
     clip_eps: float = 0.05
     surrogate: str = "ppo"
     # CFM loss per sample in the ratio and BC term: "mean" over chunk steps and action dims, or "sum" (FPO++).
-    # On SmolVLA/LIBERO, "sum" pushed 83% of ratios out of the 0.05 clip within 10 steps; "mean" gave 16%.
+    # On SmolVLA/LIBERO the summed log-ratio has a numerical floor of ~0.2 after any weight change, so
+    # "sum" needs a clip_eps above that (e.g. 0.3); "mean" divides the log-ratio by chunk steps x dims.
     loss_reduction: str = "mean"
     # Weight of the behavior-cloning term on demos; 0 disables it (ablation).
     beta: float = 0.5
@@ -131,6 +146,16 @@ class FlexConfig:
     # recap: fraction of practice frames tagged "positive" (top quantile by advantage).
     recap_positive_frac: float = 0.3
     use_amp: bool = True
+    # Keep trainable weights in fp32 (SmolVLA loads them in bf16, which rounds most small Adam steps away).
+    fp32_trainable: bool = True
+    # Run the policy and its reference in train mode during policy-gradient updates (both identically, so
+    # the ratio stays exact). For policies without dropout whose gradient checkpointing only runs in train
+    # mode, such as pi05.
+    pg_train_mode: bool = False
+    # Save a checkpoint every this many rounds (the last round is always saved).
+    checkpoint_every: int = 1
+    # Upload metrics (every round) and the final checkpoint to this Hub repo (private model repo).
+    hub_sync_repo: str | None = None
     num_workers: int = 4
 
     # --- Evaluation ---
@@ -151,6 +176,7 @@ class FlexConfig:
         if self.mode == "fpo":
             self.actor_replay = self.critic_replay = False
             self.critic_scaling = self.per_task_std = self.prioritized_sampling = False
+            self.require_contrast = False
             self.beta = 0.0
             self.optimizer = "adamw"
 
@@ -177,6 +203,18 @@ class FlexConfig:
             raise ValueError(f"loss_reduction must be 'sum' or 'mean', got {self.loss_reduction!r}")
         if self.rounds < 1 or self.episodes_per_task < 1 or self.replay_window < 1 or self.n_mc < 1:
             raise ValueError("rounds, episodes_per_task, replay_window and n_mc must be >= 1")
+        if self.practice_envs_per_task < 0 or (
+            self.practice_envs_per_task and self.episodes_per_task % self.practice_envs_per_task
+        ):
+            raise ValueError("practice_envs_per_task must be 0 or divide episodes_per_task")
+        if self.demo_repo_id is None and (
+            self.mode not in PG_MODES or self.beta > 0 or not self.record_chunks
+        ):
+            raise ValueError(
+                "Without demos (demo_repo_id=None) use a policy-gradient mode, beta=0 and record_chunks"
+            )
+        if self.checkpoint_every < 1:
+            raise ValueError("checkpoint_every must be >= 1")
         if not 0.0 <= self.uniform_mix <= 1.0:
             raise ValueError("uniform_mix must be in [0, 1]")
         if not 0.0 < self.q_min <= 1.0 or self.ev_target <= 0:

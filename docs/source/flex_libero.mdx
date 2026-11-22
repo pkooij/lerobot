@@ -56,10 +56,21 @@ Two implementation choices are worth knowing:
   frame, the next `H` recorded actions join the end of one chunk to the start of the next, which was
   sampled from a later observation; on LIBERO the action jumps 2.4x more at those joins than within a
   chunk. The critic still uses every frame, and the demo BC term uses the whole chunk.
-- **Averaged, not summed, CFM loss.** FPO++ sums the flow-matching loss over the action. On SmolVLA
-  the summed loss is so large that 10 update steps pushed 83% of the ratios outside the `0.05` clip
-  range (mean absolute log ratio 1.7), which leaves the policy gradient almost no effect. Averaging
-  over chunk steps and action dims (`--loss_reduction=mean`, the default) gave 16% (log ratio 0.03).
+- **No policy gradient without contrast.** If a task has only failures (or only successes) in the
+  actor's replay window, every return in it is the same and `A = G - V` is just the critic's error.
+  Per-task standardization would scale that noise to unit variance. Such tasks get zero advantage and are
+  not sampled for `L_PG`; their demos still enter the BC term. On LIBERO-10 with 5 demos, one task had
+  no success for six rounds. `--require_contrast=false` turns this off; `adv/tasks_without_contrast` in
+  `metrics.jsonl` counts the tasks affected.
+- **Averaged CFM loss by default.** FPO++ sums the flow-matching loss over the action
+  (`--loss_reduction=sum`). On SmolVLA the summed log ratio has a numerical floor: after one Adam step,
+  even at lr `1e-7`, its mean absolute value is about 0.2 and 60-70% of the ratios fall outside a `0.05`
+  clip. FPO++'s `0.05` therefore cannot work with the summed loss here; use a clip above the floor
+  (`--clip_eps=0.3`). Averaging over chunk steps and action dims (the default) divides the log ratio by
+  their product (70 on LIBERO), so `0.05` there is a much looser trust region.
+- **fp32 trainable weights.** SmolVLA loads its action expert in bf16, where a step of `1e-5` changes only
+  16% of the weights and smaller steps almost none. FLEX casts the trainable weights to fp32
+  (`--fp32_trainable`, on by default); the frozen VLM stays in bf16.
 
 ## Baselines and ablations
 

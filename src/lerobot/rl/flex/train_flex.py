@@ -54,6 +54,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.envs import close_envs, make_env, make_env_pre_post_processors
 from lerobot.optim.cautious import CautiousAdamW
 from lerobot.policies import make_policy, make_pre_post_processors
+from lerobot.processor import bind_relative_anchor
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
 from lerobot.utils.device_utils import get_safe_torch_device
 from lerobot.utils.random_utils import set_seed
@@ -64,7 +65,14 @@ from .advantages import EpisodeRecord
 from .configuration_flex import PG_MODES, FlexConfig
 from .critic import FrameEncoder, FrameFeatures, build_critic_inputs, encode_dataset, fit_cross_fitted_critic
 from .flow_pg import cfm_loss, flow_pg_loss
-from .practice import create_practice_dataset, practice_features, practice_round
+from .practice import (
+    ACTION_IS_PAD,
+    chunk_features,
+    create_practice_dataset,
+    env_practice_features,
+    practice_features,
+    practice_round,
+)
 from .select_demos import episode_task_strings, select_demo_episodes
 
 logger = logging.getLogger(__name__)
@@ -97,6 +105,7 @@ class WeightedView(torch.utils.data.Dataset):
         keys: list[str],
         advantages: np.ndarray | None = None,
         tags: list[str] | None = None,
+        chunk: int = 0,
     ):
         if advantages is None:
             advantages = np.zeros(len(dataset), dtype=np.float32)
@@ -106,6 +115,7 @@ class WeightedView(torch.utils.data.Dataset):
         self.keys = keys
         self.advantages = np.asarray(advantages, dtype=np.float32)
         self.tags = tags
+        self.chunk = chunk
 
     def __len__(self) -> int:
         return len(self.dataset)
@@ -113,6 +123,9 @@ class WeightedView(torch.utils.data.Dataset):
     def __getitem__(self, idx: int) -> dict[str, Any]:
         item = self.dataset[idx]
         out = {k: v for k, v in item.items() if k in self.keys or k.endswith("_is_pad")}
+        if self.chunk:  # recorded chunks (see practice.chunk_features): (chunk * dim,) -> (chunk, dim)
+            out[ACTION] = out[ACTION].reshape(self.chunk, -1)
+            out[ACTION_IS_PAD] = out[ACTION_IS_PAD].bool()
         out["task"] = item["task"] if self.tags is None else recap_prompt(item["task"], self.tags[idx])
         out["flex_adv"] = torch.tensor(self.advantages[idx])
         return out
@@ -140,6 +153,35 @@ class InstructionWrapper:
         return getattr(self._pre, name)
 
 
+def upcast_trainable(policy: torch.nn.Module) -> int:
+    """Store the trainable weights in fp32; frozen ones keep their dtype. Returns how many were cast.
+
+    SmolVLA loads its action expert in bf16, where an Adam step of ~lr per weight is below the rounding step
+    of most weights: at lr 1e-5 only 16% of them change. The layers cast their inputs to their weight
+    dtype, so the expert then also computes in fp32."""
+    cast = 0
+    for p in policy.parameters():
+        if p.requires_grad and p.dtype != torch.float32:
+            p.data = p.data.float()
+            cast += p.numel()
+    return cast
+
+
+def share_frozen_weights(reference: torch.nn.Module, policy: torch.nn.Module) -> int:
+    """Point the reference's frozen parameters at the policy's (they never change), so a large frozen
+    backbone (pi05's 2.9B-parameter VLM) is held once. Returns the number of parameters shared."""
+    shared = 0
+    for (name, p_ref), (name_pol, p) in zip(
+        reference.named_parameters(), policy.named_parameters(), strict=True
+    ):
+        if name != name_pol:
+            raise RuntimeError(f"Parameter order differs: {name} vs {name_pol}")
+        if not p.requires_grad:
+            p_ref.data = p.data
+            shared += p.numel()
+    return shared
+
+
 def _episode_frame_slices(records: list[EpisodeRecord]) -> list[slice]:
     starts = np.concatenate([[0], np.cumsum([r.length for r in records])])
     return [slice(int(starts[i]), int(starts[i + 1])) for i in range(len(records))]
@@ -159,9 +201,27 @@ def actor_frames(mem: MemoryRound, cfg: FlexConfig, horizon: int) -> np.ndarray:
     supervised modes imitate the executed trajectory and keep every frame.
     """
     frame_index = np.asarray(mem.features.frame_index)
-    if cfg.mode not in PG_MODES or horizon <= 1:
+    if cfg.mode not in PG_MODES or horizon <= 1 or cfg.record_chunks:
         return np.ones(len(frame_index), dtype=bool)
     return frame_index % horizon == 0
+
+
+def contrast_frames(memory: list[MemoryRound], cfg: FlexConfig, current_round: int) -> list[np.ndarray]:
+    """Per round, the frames of tasks whose actor window holds both a success and a failure.
+
+    In a task the policy always fails (or always solves) in the window, every return is the same, so
+    ``A = G - V`` is the critic's error alone, and per-task standardization would scale that noise to unit
+    variance. Such tasks get no policy gradient (their demos still enter the BC term).
+    """
+    if cfg.mode not in PG_MODES or not cfg.require_contrast:
+        return [np.ones(sum(r.length for r in mem.records), dtype=bool) for mem in memory]
+    outcomes: dict[str, set[bool]] = defaultdict(set)
+    for mem in memory:
+        if _in_use(mem.round, current_round, cfg.actor_replay):
+            for rec in mem.records:
+                outcomes[rec.task_key].add(rec.success)
+    keep = {task for task, seen in outcomes.items() if len(seen) == 2}
+    return [np.concatenate([np.full(r.length, r.task_key in keep) for r in mem.records]) for mem in memory]
 
 
 def judge(
@@ -190,8 +250,8 @@ def judge(
         for rec in mem.records:
             n = rec.length
             task_ids.append(np.full(n, task_index[rec.task_key]))
-            time_frac.append(np.arange(n) / max_steps[rec.task_key])
-            returns.append(adv.value_targets(n, rec.success, cfg.gamma))
+            time_frac.append(np.arange(n) * rec.stride / max_steps[rec.task_key])
+            returns.append(adv.value_targets(n, rec.success, cfg.gamma**rec.stride))
             weights.append(np.full(n, stale))
             ep_ids.append(np.full(n, ep_counter))
             outcome.append(np.full(n, rec.success))
@@ -228,8 +288,10 @@ def judge(
     q_c = adv.critic_scale(ev, cfg.ev_target, cfg.q_min) if cfg.critic_scaling else 1.0
 
     raw = returns_a - values
+    contrast = np.concatenate(contrast_frames(memory, cfg, current_round))
     groups = task_ids_a if cfg.per_task_std else np.zeros_like(task_ids_a)
-    std_adv = adv.per_task_standardize(raw, groups, fit_mask=actor_mask)
+    std_adv = adv.per_task_standardize(raw, groups, fit_mask=actor_mask & contrast)
+    std_adv[~contrast] = 0.0
 
     per_round, offset = [], 0
     for mem in memory:
@@ -255,13 +317,14 @@ def judge(
         "critic/value_mean": float(values[critic_mask].mean()),
         "adv/raw_std": float(raw[actor_mask].std()),
         "adv/frac_positive": float((std_adv[actor_mask] > 0).mean()),
+        "adv/tasks_without_contrast": float(len(np.unique(task_ids_a[actor_mask & ~contrast]))),
     }
     return per_round, q_c, stats
 
 
 def build_loaders(
     cfg: FlexConfig,
-    demo_ds: LeRobotDataset,
+    demo_ds: LeRobotDataset | None,
     memory: list[MemoryRound],
     round_adv: list[np.ndarray],
     current_round: int,
@@ -271,24 +334,24 @@ def build_loaders(
     """Practice loader (replay, sampled by staleness x advantage priority over `actor_frames`) and demo
     loader, each sized for one iteration of ``steps_per_round`` updates."""
     used = [
-        (mem, a)
-        for mem, a in zip(memory, round_adv, strict=True)
+        (mem, a, c)
+        for mem, a, c in zip(memory, round_adv, contrast_frames(memory, cfg, current_round), strict=True)
         if _in_use(mem.round, current_round, cfg.actor_replay)
     ]
     views: list[torch.utils.data.Dataset] = []
     stale_l, adv_l, success_l, frames_l = [], [], [], []
-    all_adv = np.concatenate([a for _, a in used])
+    all_adv = np.concatenate([a for _, a, _ in used])
     threshold = np.quantile(all_adv, 1.0 - cfg.recap_positive_frac) if cfg.mode == "recap" else 0.0
-    for mem, a in used:
+    for mem, a, contrast in used:
         tags = None
         if cfg.mode == "recap":
             tags = [RECAP_POSITIVE if x >= threshold else RECAP_NEGATIVE for x in a]
-        views.append(WeightedView(mem.train_ds, keys, a, tags))
+        views.append(WeightedView(mem.train_ds, keys, a, tags, chunk=horizon if cfg.record_chunks else 0))
         stale = adv.staleness_weights(np.array([mem.round]), current_round, cfg.staleness_half_life)[0]
         stale_l.append(np.full(len(a), stale))
         adv_l.append(a)
         success_l.append(np.concatenate([np.full(r.length, r.success) for r in mem.records]))
-        frames_l.append(actor_frames(mem, cfg, horizon))
+        frames_l.append(actor_frames(mem, cfg, horizon) & contrast)
     stale_a = np.concatenate(stale_l)
     frames_a = np.concatenate(frames_l)
     if cfg.mode in PG_MODES:
@@ -320,7 +383,7 @@ def build_loaders(
         )
 
     demo_loader = None
-    if cfg.mode not in PG_MODES or cfg.beta > 0:
+    if demo_ds is not None and (cfg.mode not in PG_MODES or cfg.beta > 0):
         demo_tags = [RECAP_POSITIVE] * len(demo_ds) if cfg.mode == "recap" else None
         demo_view = WeightedView(demo_ds, keys, None, demo_tags)
         demo_loader = torch.utils.data.DataLoader(
@@ -367,7 +430,9 @@ def improve(
     pg = cfg.mode in PG_MODES
     if pg and reference is None:
         raise ValueError("Policy-gradient modes need a reference policy")
-    policy.train(not pg)
+    policy.train(not pg or cfg.pg_train_mode)
+    if reference is not None:
+        reference.train(cfg.pg_train_mode)
     params = [p for p in policy.parameters() if p.requires_grad]
 
     def amp() -> AbstractContextManager:
@@ -438,13 +503,18 @@ def improve(
                 (step + 1) / (time.perf_counter() - t0),
             )
     policy.eval()
+    if reference is not None:
+        reference.eval()
     return {k: float(np.mean(v)) for k, v in logs.items()} | {"improve/q_c": q_c}
 
 
-def evaluate(cfg: FlexConfig, policy, preprocessor, postprocessor, env_pre, env_post) -> dict[str, Any]:
+def evaluate(
+    cfg: FlexConfig, policy, preprocessor, postprocessor, env_pre, env_post, envs=None
+) -> dict[str, Any]:
+    """Evaluate on fresh envs, or on ``envs`` (left open) when given."""
     from lerobot.scripts.lerobot_eval import eval_policy_all
 
-    eval_envs = make_env(cfg.env, n_envs=cfg.eval_batch_size, use_async_envs=cfg.use_async_envs)
+    eval_envs = envs or make_env(cfg.env, n_envs=cfg.eval_batch_size, use_async_envs=cfg.use_async_envs)
     pre = InstructionWrapper(preprocessor, RECAP_POSITIVE) if cfg.mode == "recap" else preprocessor
     with torch.no_grad():
         info = eval_policy_all(
@@ -458,7 +528,8 @@ def evaluate(cfg: FlexConfig, policy, preprocessor, postprocessor, env_pre, env_
             start_seed=cfg.seed,
             max_parallel_tasks=1,
         )
-    close_envs(eval_envs)
+    if envs is None:
+        close_envs(eval_envs)
     overall = info["overall"]
     per_task = {
         f"{t['task_group']}/{t['task_id']}": 100.0 * float(np.mean(t["metrics"]["successes"]))
@@ -500,9 +571,9 @@ def train_flex(cfg: FlexConfig) -> None:
     device = get_safe_torch_device(cfg.policy.device, log=True)
 
     # Practice frames are stored in the demos' schema, so the sim must render at the demos' resolution.
-    meta = LeRobotDatasetMetadata(cfg.demo_repo_id, revision=cfg.demo_revision)
-    demo_cams = [k for k in meta.camera_keys if k.startswith(OBS_IMAGES)]
-    if demo_cams and hasattr(cfg.env, "observation_height"):
+    meta = LeRobotDatasetMetadata(cfg.demo_repo_id, revision=cfg.demo_revision) if cfg.demo_repo_id else None
+    demo_cams = [k for k in meta.camera_keys if k.startswith(OBS_IMAGES)] if meta else []
+    if meta and demo_cams and hasattr(cfg.env, "observation_height"):
         height, width = (int(x) for x in meta.features[demo_cams[0]]["shape"][:2])
         if (cfg.env.observation_height, cfg.env.observation_width) != (height, width):
             logger.info(
@@ -517,13 +588,15 @@ def train_flex(cfg: FlexConfig) -> None:
     (out / "flex_config.json").write_text(json.dumps(asdict(cfg), indent=2, default=str))
 
     # --- Envs, policy, processors ---
-    practice_envs = make_env(cfg.env, n_envs=cfg.episodes_per_task, use_async_envs=cfg.use_async_envs)
+    envs_per_task = cfg.practice_envs_per_task or cfg.episodes_per_task
+    practice_envs = make_env(cfg.env, n_envs=envs_per_task, use_async_envs=cfg.use_async_envs)
     env_pre, env_post = make_env_pre_post_processors(env_cfg=cfg.env, policy_cfg=cfg.policy)
     task_descriptions = {}
+    first_obs: dict[str, Any] = {}
     for suite, tasks in practice_envs.items():
         for tid, env in tasks.items():
             # Sim envs only report their task description after a reset.
-            env.reset(seed=cfg.seed)
+            first_obs, _ = env.reset(seed=cfg.seed)
             task_descriptions[f"{suite}/{tid}"] = list(env.call("task_description"))[0]
     max_steps = {
         f"{suite}/{tid}": int(env.call("_max_episode_steps")[0])
@@ -534,35 +607,56 @@ def train_flex(cfg: FlexConfig) -> None:
 
     policy = make_policy(cfg.policy, env_cfg=cfg.env)
     policy.eval()
+    if cfg.fp32_trainable:
+        upcast_trainable(policy)
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=cfg.policy,
         pretrained_path=cfg.policy.pretrained_path,
         preprocessor_overrides={"device_processor": {"device": str(device)}},
     )
+    # Relative-action policies (pi05): hold each chunk's state anchor until the chunk is used up.
+    bind_relative_anchor(policy, preprocessor)
     horizon = int(getattr(cfg.policy, "n_action_steps", 1))
+    chunk = horizon if cfg.record_chunks else 0
 
     # --- Demos (fixed offline buffer) ---
-    demo_episodes = cfg.demo_episodes or select_demo_episodes(
-        episode_task_strings(cfg.demo_repo_id, cfg.demo_revision),
-        [task_descriptions[k] for k in sorted(task_descriptions)],
-        cfg.demos_per_task,
-        cfg.seed,
-    )
-    delta_timestamps = resolve_delta_timestamps(cfg.policy, meta)
-    demo_ds = LeRobotDataset(
-        cfg.demo_repo_id,
-        episodes=demo_episodes,
-        delta_timestamps=delta_timestamps,
-        revision=cfg.demo_revision,
-        video_backend=cfg.video_backend,
-    )
-    camera_keys = [k for k in meta.camera_keys if k.startswith(OBS_IMAGES)]
+    demo_ds: LeRobotDataset | None = None
+    delta_timestamps: dict[str, list[float]] | None = None
+    if meta is not None:
+        assert cfg.demo_repo_id is not None
+        demo_episodes = cfg.demo_episodes or select_demo_episodes(
+            episode_task_strings(cfg.demo_repo_id, cfg.demo_revision),
+            [task_descriptions[k] for k in sorted(task_descriptions)],
+            cfg.demos_per_task,
+            cfg.seed,
+        )
+        delta_timestamps = resolve_delta_timestamps(cfg.policy, meta)
+        demo_ds = LeRobotDataset(
+            cfg.demo_repo_id,
+            episodes=demo_episodes,
+            delta_timestamps=delta_timestamps,
+            revision=cfg.demo_revision,
+            video_backend=cfg.video_backend,
+        )
+        camera_keys = [k for k in meta.camera_keys if k.startswith(OBS_IMAGES)]
+        feats = practice_features(meta.features, camera_keys, OBS_STATE)
+        fps = meta.fps
+        logger.info(
+            "Demo buffer: %d episodes, %d frames; cameras %s", len(demo_episodes), len(demo_ds), camera_keys
+        )
+    else:
+        assert cfg.policy.output_features is not None
+        (action_dim,) = cfg.policy.output_features[ACTION].shape
+        feats = env_practice_features(first_obs, action_dim)
+        camera_keys = [k for k in feats if k.startswith(OBS_IMAGES)]
+        fps = cfg.env.fps
+        logger.info("No demos; practice cameras %s", camera_keys)
+    if cfg.record_chunks:
+        feats = chunk_features(feats, chunk)
+        # Each recorded frame already holds its chunk of actions.
+        delta_timestamps = None
     record_keys = [*camera_keys, OBS_STATE]
     train_keys = [*record_keys, ACTION]
-    feats = practice_features(meta.features, camera_keys, OBS_STATE)
-    logger.info(
-        "Demo buffer: %d episodes, %d frames; cameras %s", len(demo_episodes), len(demo_ds), camera_keys
-    )
 
     # --- Optimizer (state persists across rounds: the cautious gate compares against the running trend) ---
     params = [p for p in policy.parameters() if p.requires_grad]
@@ -571,11 +665,39 @@ def train_flex(cfg: FlexConfig) -> None:
     encoder = FrameEncoder().to(device)
     # Trust-region anchor of the flow policy gradient: the policy as it was when this iteration's data
     # was collected (synced at the start of every actor update).
-    reference = copy.deepcopy(policy).eval().requires_grad_(False) if cfg.mode in PG_MODES else None
+    reference = None
+    if cfg.mode in PG_MODES:
+        reference = copy.deepcopy(policy)
+        logger.info("Reference shares %d frozen parameters", share_frozen_weights(reference, policy))
+        reference.eval().requires_grad_(False)
     window = cfg.replay_window if (cfg.actor_replay or cfg.critic_replay) else 1
+    eval_envs = practice_envs if cfg.eval_reuse_practice_envs else None
+
+    def run_eval() -> dict[str, Any]:
+        return evaluate(cfg, policy, preprocessor, postprocessor, env_pre, env_post, envs=eval_envs)
+
+    def sync(paths: list[str]) -> None:
+        if not cfg.hub_sync_repo:
+            return
+        from huggingface_hub import HfApi
+
+        api = HfApi()
+        api.create_repo(cfg.hub_sync_repo, private=True, exist_ok=True)
+        prefix = out.name
+        try:
+            api.upload_folder(
+                repo_id=cfg.hub_sync_repo,
+                folder_path=out,
+                path_in_repo=prefix,
+                allow_patterns=paths,
+                commit_message=f"{prefix}: sync",
+            )
+        except Exception as e:  # keep training if the Hub is unreachable
+            logger.warning("Hub sync failed: %s", e)
 
     if cfg.eval_at_start:
-        log({"round": -1, **evaluate(cfg, policy, preprocessor, postprocessor, env_pre, env_post)})
+        log({"round": -1, **run_eval()})
+        sync(["metrics.jsonl", "flex_config.json"])
 
     practice_pre = InstructionWrapper(preprocessor, RECAP_POSITIVE) if cfg.mode == "recap" else preprocessor
     memory: list[MemoryRound] = []
@@ -583,12 +705,14 @@ def train_flex(cfg: FlexConfig) -> None:
         t_round = time.perf_counter()
         # 1. Data collection
         root = out / "practice" / f"round_{r:03d}"
-        writer = create_practice_dataset(root, r, meta.fps, feats)
+        writer = create_practice_dataset(root, r, fps, feats)
         records = practice_round(
             practice_envs,
             writer,
             r,
             record_keys,
+            batches_per_task=cfg.episodes_per_task // envs_per_task,
+            chunk=chunk,
             policy=policy,
             preprocessor=practice_pre,
             postprocessor=postprocessor,
@@ -635,17 +759,21 @@ def train_flex(cfg: FlexConfig) -> None:
             )
         )
 
-        ckpt = out / "checkpoints" / f"round_{r:03d}" / "pretrained_model"
-        policy.save_pretrained(ckpt)
-        preprocessor.save_pretrained(ckpt)
-        postprocessor.save_pretrained(ckpt)
+        last = r == cfg.rounds - 1
+        if (r + 1) % cfg.checkpoint_every == 0 or last:
+            ckpt = out / "checkpoints" / f"round_{r:03d}" / "pretrained_model"
+            policy.save_pretrained(ckpt)
+            preprocessor.save_pretrained(ckpt)
+            postprocessor.save_pretrained(ckpt)
 
-        if (r + 1) % cfg.eval_every == 0 or r == cfg.rounds - 1:
-            metrics.update(evaluate(cfg, policy, preprocessor, postprocessor, env_pre, env_post))
+        if (r + 1) % cfg.eval_every == 0 or last:
+            metrics.update(run_eval())
         metrics["round_s"] = time.perf_counter() - t_round
         log(metrics)
+        sync(["metrics.jsonl", "flex_config.json", "practice/*/flex_episodes.json"])
 
     close_envs(practice_envs)
+    sync([f"checkpoints/round_{cfg.rounds - 1:03d}/**"])
     logger.info("FLEX done. Metrics in %s", metrics_path)
 
 

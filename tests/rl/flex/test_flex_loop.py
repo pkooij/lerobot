@@ -28,17 +28,28 @@ import torch  # noqa: E402
 from gymnasium import spaces  # noqa: E402
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: E402
+from lerobot.rl.flex.advantages import EpisodeRecord  # noqa: E402
 from lerobot.rl.flex.configuration_flex import FlexConfig  # noqa: E402
 from lerobot.rl.flex.critic import FrameEncoder, encode_dataset, fit_cross_fitted_critic  # noqa: E402
-from lerobot.rl.flex.practice import create_practice_dataset, practice_features, practice_round  # noqa: E402
+from lerobot.rl.flex.practice import (  # noqa: E402
+    chunk_features,
+    create_practice_dataset,
+    env_practice_features,
+    practice_features,
+    practice_round,
+)
 from lerobot.rl.flex.train_flex import (  # noqa: E402
     RECAP_POSITIVE,
     InstructionWrapper,
     MemoryRound,
+    WeightedView,
     actor_frames,
     build_loaders,
+    contrast_frames,
     improve,
     judge,
+    share_frozen_weights,
+    upcast_trainable,
 )
 from lerobot.utils.constants import ACTION, OBS_STATE  # noqa: E402
 
@@ -120,7 +131,7 @@ def demo_features():
     }
 
 
-def _practice(tmp_path, demo_features, round_idx, policy):
+def _practice(tmp_path, demo_features, round_idx, policy, batches_per_task=1):
     envs = {"fake": {0: gym.vector.SyncVectorEnv([lambda i=i: FakeCanonicalEnv(i) for i in range(4)])}}
     feats = practice_features(demo_features, [CAM], OBS_STATE)
     root = tmp_path / f"round_{round_idx:03d}"
@@ -130,6 +141,7 @@ def _practice(tmp_path, demo_features, round_idx, policy):
         writer,
         round_idx,
         [CAM, OBS_STATE],
+        batches_per_task=batches_per_task,
         policy=policy,
         preprocessor=Identity(),
         postprocessor=Identity(),
@@ -156,6 +168,15 @@ def test_practice_records_attempts_with_outcomes(tmp_path, demo_features):
     item = chunked[3]  # 2 frames before the end of a 5-frame episode
     assert item[ACTION].shape == (4, 7)
     assert item["action_is_pad"].tolist() == [False, False, True, True]
+
+
+def test_practice_runs_each_task_in_batches(tmp_path, demo_features):
+    root, records = _practice(tmp_path, demo_features, 0, LinearPolicy(), batches_per_task=2)
+    assert [r.success for r in records] == [True, False, True, False] * 2
+    ds = LeRobotDataset("flex/practice_round_000", root=root)
+    assert ds.meta.total_episodes == 8 and len(ds) == sum(r.length for r in records)
+    with pytest.raises(ValueError, match="practice_envs_per_task"):
+        FlexConfig(episodes_per_task=20, practice_envs_per_task=3).check()
 
 
 def test_critic_cross_fitting_learns_separable_outcomes():
@@ -315,3 +336,76 @@ def test_cli_entry_point_parses_flex_config():
         "libero_spatial",
         256,
     )
+
+
+def test_tasks_without_outcome_contrast_get_no_policy_gradient():
+    def rec(r, task, success, length=3):
+        return EpisodeRecord("practice", r, f"s/{task}", success, length)
+
+    # Task 0 always fails in the window, task 1 has both outcomes, task 2 only succeeds.
+    memory = [
+        MemoryRound(0, [rec(0, 0, False), rec(0, 1, True), rec(0, 2, True)], None, None),
+        MemoryRound(1, [rec(1, 0, False), rec(1, 1, False), rec(1, 2, True)], None, None),
+    ]
+    masks = contrast_frames(memory, FlexConfig(mode="flex"), current_round=1)
+    assert [m.tolist() for m in masks] == [[False] * 3 + [True] * 3 + [False] * 3] * 2
+    # Without actor replay only the current round counts: task 1 then has failures only.
+    no_replay = FlexConfig(mode="flex", actor_replay=False)
+    assert not any(m.any() for m in contrast_frames(memory, no_replay, current_round=1))
+    for cfg in (FlexConfig(mode="flex", require_contrast=False), FlexConfig(mode="filtered_bc")):
+        assert all(m.all() for m in contrast_frames(memory, cfg, current_round=1))
+    fpo = FlexConfig(mode="fpo")
+    fpo.check()
+    assert not fpo.require_contrast  # the FPO++ baseline has none of FLEX's additions
+
+
+def test_upcast_trainable_casts_only_trainable_weights():
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 2)).to(torch.bfloat16)
+    model[0].requires_grad_(False)
+    cast = upcast_trainable(model)
+    assert cast == 4 * 2 + 2
+    assert model[0].weight.dtype == torch.bfloat16
+    assert model[1].weight.dtype == torch.float32 and model[1].bias.dtype == torch.float32
+    assert upcast_trainable(model) == 0
+    assert FlexConfig().fp32_trainable
+
+
+def test_practice_records_one_frame_per_chunk_without_demos(tmp_path):
+    chunk = 3
+    envs = {"fake": {0: gym.vector.SyncVectorEnv([lambda i=i: FakeCanonicalEnv(i) for i in range(2)])}}
+    obs, _ = envs["fake"][0].reset(seed=0)
+    feats = chunk_features(env_practice_features(obs, 7), chunk)
+    assert feats[CAM]["dtype"] == "image" and feats[ACTION]["shape"] == (chunk * 7,)
+    root = tmp_path / "round_000"
+    records = practice_round(
+        envs,
+        create_practice_dataset(root, 0, FPS, feats),
+        0,
+        [CAM, OBS_STATE],
+        chunk=chunk,
+        policy=LinearPolicy(),
+        preprocessor=Identity(),
+        postprocessor=Identity(),
+        env_preprocessor=Identity(),
+        env_postprocessor=Identity(),
+    )
+    envs["fake"][0].close()
+    # 5 steps -> chunks at t=0,3; 8 steps -> t=0,3,6.
+    assert [(r.success, r.length, r.stride) for r in records] == [(True, 2, chunk), (False, 3, chunk)]
+    ds = LeRobotDataset("flex/practice_round_000", root=root)
+    assert ds.hf_dataset["frame_index"][:5] == [0, 1, 0, 1, 2]
+    view = WeightedView(ds, [CAM, OBS_STATE, ACTION], chunk=chunk)
+    item = view[1]  # the success episode's second chunk: steps 3 and 4, then padding
+    assert item[ACTION].shape == (chunk, 7)
+    assert item["action_is_pad"].tolist() == [False, False, True]
+    assert torch.equal(item[ACTION][2], item[ACTION][1])  # padded with the last executed action
+    assert ds[1][OBS_STATE][0].item() == pytest.approx(3 / MAX_STEPS)  # recorded at t=3
+
+
+def test_reference_shares_frozen_weights():
+    policy = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 2))
+    policy[0].requires_grad_(False)
+    reference = copy.deepcopy(policy).requires_grad_(False)
+    assert share_frozen_weights(reference, policy) == 20
+    assert reference[0].weight.data_ptr() == policy[0].weight.data_ptr()
+    assert reference[1].weight.data_ptr() != policy[1].weight.data_ptr()
