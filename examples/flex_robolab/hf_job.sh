@@ -51,18 +51,22 @@ export UV_LINK_MODE=copy UV_HTTP_TIMEOUT=600
 stamp "GPU and graphics driver files"
 nvidia-smi
 # Isaac Sim renders through Vulkan: the NVIDIA ICD must be visible (NVIDIA_DRIVER_CAPABILITIES=all mounts it).
-if [[ ! -f /usr/share/vulkan/icd.d/nvidia_icd.json ]] && ldconfig -p | grep -q libGLX_nvidia.so.0; then
+# Only when no NVIDIA ICD is there yet: two ICDs for one GPU make Isaac Sim unstable.
+if ! ls /etc/vulkan/icd.d/nvidia* /usr/share/vulkan/icd.d/nvidia* >/dev/null 2>&1 \
+    && ldconfig -p | grep -q libGLX_nvidia.so.0; then
   mkdir -p /usr/share/vulkan/icd.d
   echo '{"file_format_version":"1.0.0","ICD":{"library_path":"libGLX_nvidia.so.0","api_version":"1.3"}}' \
     >/usr/share/vulkan/icd.d/nvidia_icd.json
   echo "wrote the NVIDIA Vulkan ICD file"
 fi
-if [[ ! -f /usr/share/glvnd/egl_vendor.d/10_nvidia.json ]] && ldconfig -p | grep -q libEGL_nvidia.so.0; then
+if ! ls /etc/glvnd/egl_vendor.d/*nvidia* /usr/share/glvnd/egl_vendor.d/*nvidia* >/dev/null 2>&1 \
+    && ldconfig -p | grep -q libEGL_nvidia.so.0; then
   mkdir -p /usr/share/glvnd/egl_vendor.d
   echo '{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}' \
     >/usr/share/glvnd/egl_vendor.d/10_nvidia.json
   echo "wrote the NVIDIA EGL vendor file"
 fi
+ls /etc/vulkan/icd.d /usr/share/vulkan/icd.d /etc/glvnd/egl_vendor.d /usr/share/glvnd/egl_vendor.d 2>/dev/null || true
 ldconfig -p | grep -E "libGLX_nvidia|libEGL_nvidia|libnvidia-glcore" || echo "WARNING: NVIDIA graphics libraries missing"
 vulkaninfo --summary 2>&1 | grep -E "deviceName|driverName|apiVersion|ERROR" | head -8 || true
 
@@ -110,7 +114,7 @@ sim:
     observation_width: ${OBS_W}
 EOF
 (cd ${WORK}/robolab && OMNI_KIT_ACCEPT_EULA=YES ACCEPT_EULA=Y /opt/isaac/bin/lerobot-env-server \
-  --config_path=${WORK}/robolab_server.yaml) >"${OUT}/server.log" 2>&1 &
+  --config_path=${WORK}/robolab_server.yaml --request_timeout_s=1800) >"${OUT}/server.log" 2>&1 &
 SERVER=$!
 trap 'kill ${SERVER} 2>/dev/null || true' EXIT
 for _ in $(seq 1 240); do
@@ -122,7 +126,9 @@ grep -q "Serving robolab" "${OUT}/server.log" || { tail -80 "${OUT}/server.log";
 stamp "server up"
 nvidia-smi --query-gpu=memory.used,memory.total --format=csv
 
-ENV_ARGS=(--env.type=robolab --env.server.endpoint=${ENDPOINT} --env.observation_height=${OBS_H}
+# Building a task's world for a new batch size takes minutes (shader and material compilation).
+ENV_ARGS=(--env.type=robolab --env.server.endpoint=${ENDPOINT} --env.server.setup_timeout_s=1800
+          --env.server.handshake_timeout_s=60 --env.observation_height=${OBS_H}
           --env.observation_width=${OBS_W})
 upload() {
   ${LR}/hf upload "${HUB_REPO}" "${OUT}" "${RUN_NAME}" --repo-type model --private \

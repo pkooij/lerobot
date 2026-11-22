@@ -53,6 +53,9 @@ class EnvClientConfig:
     deployment: str | None = None
     # Seconds to wait for the server to connect and reply before reporting that no server answered.
     handshake_timeout_s: float = 10.0
+    # Seconds to wait for open and reset, which may build the simulator (RoboLab builds a 10-env world in
+    # minutes). None: the request timeout.
+    setup_timeout_s: float | None = None
     # Zenoh JSON5 file with TLS and access-control settings, as for remote inference.
     zenoh_config_path: str | None = None
     # JPEG (at jpeg_quality) sends camera frames with less bandwidth but lower quality.
@@ -164,6 +167,7 @@ class EnvConfig(draccus.ChoiceRegistry, abc.ABC):
                 server.endpoint,
                 server.deployment or self.type,
                 SERVED_TIMEOUT_S,
+                setup_timeout_s=server.setup_timeout_s,
                 handshake_timeout_s=server.handshake_timeout_s,
                 zenoh_config_path=server.zenoh_config_path,
                 max_payload_bytes=server.max_payload_bytes,
