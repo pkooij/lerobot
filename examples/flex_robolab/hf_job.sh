@@ -150,7 +150,8 @@ if [[ ${MODE} == pilot ]]; then
 elif [[ ${MODE} == flex ]]; then
   stamp "FLEX on ${TASKS%%,*}"
   # Writes metrics.jsonl to the Hub every round (hub_sync_repo); the final checkpoint at the end.
-  ${LR}/python -m lerobot.rl.flex.train_flex --policy.path=${POLICY} "${ENV_ARGS[@]}" --env.task="${TASKS%%,*}" \
+  # The sim holds ~16 GB with 10 envs: keep the allocator from fragmenting the rest.
+  PYTORCH_ALLOC_CONF=expandable_segments:True ${LR}/python -m lerobot.rl.flex.train_flex --policy.path=${POLICY} "${ENV_ARGS[@]}" --env.task="${TASKS%%,*}" \
     --demo_repo_id=null --mode=flex --beta=0 --record_chunks=true --pg_train_mode=true \
     --eval_reuse_practice_envs=true --loss_reduction=mean --hub_sync_repo="${HUB_REPO}" \
     --output_dir="${WORK}/flex/${RUN_NAME}" ${FLEX_ARGS:-} || echo "FLEX failed"
